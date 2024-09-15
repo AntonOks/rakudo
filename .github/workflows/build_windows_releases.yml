@@ -1,0 +1,28 @@
+# Test if Rakudo builds, on each GitHub Windows runner
+name: Build on GitHub Windows runners
+on:
+  workflow_dispatch:
+jobs:
+  build_Rakudo_Windows_Releases:
+    strategy:
+      matrix:
+        os: [windows-2019, windows-2022]
+        msvc: [10.0.40219, 12.0.40660, 14.29.30153, 14.40.33810]
+        exclude:
+          - os: windows-2022
+            msvc: 10.0.40219
+          - os: windows-2022
+            msvc: 14.29.30153
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup VS C++ Environment
+        uses: TheMrMilchmann/setup-msvc-dev@v3
+        with:
+          arch: x64
+          toolset: ${{ matrix.msvc }}
+      - name: Run the build-with-choco.ps1 script
+        run: pwsh -command ".\$GITHUB_WORKSPACE\tools\build\binary-release\Windows\build-with-choco.ps1"
+      - name: List my stuff
+        run: Get-ChildItem -Exclude ".git" -Recurse
