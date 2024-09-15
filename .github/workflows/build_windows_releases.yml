@@ -11,12 +11,12 @@ jobs:
       max-parallel: 1
       matrix:
         os: [windows-2019, windows-2022]
-        msvc: [10.0, 12.0, 14.29, 14.40]
+        msvc: [10.0.40219, 12.0.40660, 14.29.30153, 14.40.33810]
         exclude:
           - os: windows-2022
-            msvc: 10.0
+            msvc: 10.0.40219
           - os: windows-2022
-            msvc: 14.29
+            msvc: 14.29.30153
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
