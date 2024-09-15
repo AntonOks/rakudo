@@ -3,7 +3,7 @@ name: Build on GitHub Windows runners
 on:
   workflow_dispatch:
 env:
-  VSCMD_DEBUG=3
+  VSCMD_DEBUG: 3
 jobs:
   build_Rakudo_Windows_Releases:
     strategy:
