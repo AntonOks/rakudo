@@ -7,8 +7,8 @@ env:
 jobs:
   build_Rakudo_Windows_Releases:
     strategy:
-      fail-fast: false
-      max-parallel: 2
+      fail-fast: true
+      max-parallel: 1
       matrix:
         os: [windows-2019, windows-2022]
         msvc: [10.0, 12.0, 14.29, 14.40]
@@ -25,7 +25,7 @@ jobs:
         uses: TheMrMilchmann/setup-msvc-dev@v3
         with:
           arch: x64
-          toolset: ${{ matrix.msvc }}
+          sdk: ${{ matrix.msvc }}
       - name: Run the build-with-choco.ps1 script
         run: pwsh -command ".\$GITHUB_WORKSPACE\tools\build\binary-release\Windows\build-with-choco.ps1"
       - name: List my stuff
