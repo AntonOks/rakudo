@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
 env:
   VSCMD_DEBUG: 3
+  VERSION: 2024.08
+  REVISION: 01
+  RELEASE_URL: https://rakudo.org/dl/rakudo/rakudo-${{ VERSION }}.tar.gz
 jobs:
   build_Rakudo_Windows_Releases:
     strategy:
@@ -31,6 +34,6 @@ jobs:
           arch: x64
           sdk: ${{ matrix.sdk }}
       - name: Run the build-with-choco.ps1 script
-        run: pwsh -command ".\$GITHUB_WORKSPACE\tools\build\binary-release\Windows\build-with-choco.ps1"
+        run: pwsh -command ".\tools\build\binary-release\build-windows.ps1"
       - name: List my stuff
         run: Get-ChildItem -Exclude ".git" -Recurse
