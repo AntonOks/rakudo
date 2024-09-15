@@ -6,7 +6,7 @@ env:
   VSCMD_DEBUG: 3
   VERSION: 2024.08
   REVISION: 01
-  RELEASE_URL: https://rakudo.org/dl/rakudo/rakudo-${{ env.VERSION }}.tar.gz
+  RELEASE_URL: https://rakudo.org/dl/rakudo/rakudo-2024.08.tar.gz
 jobs:
   build_Rakudo_Windows_Releases:
     strategy:
