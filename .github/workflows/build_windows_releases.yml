@@ -11,15 +11,24 @@ jobs:
   build_Rakudo_Windows_Releases:
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
         os: [windows-2019, windows-2022]
-        sdk: [10.0.17763.0, 10.0.19041.0, 10.0.20348.0, 10.0.22000.0, 10.0.22621.0]
-        #exclude:
-        #  - os: windows-2022
-        #    sdk: 10.0.40219
-        #  - os: windows-2022
-        #    sdk: 14.29.30153
+        # see https://github.com/actions/runner-images/blob/main/images/windows/Windows2019-Readme.md#installed-windows-sdks and
+        #     https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md#installed-windows-sdks
+        sdk: [10.0.14393.0, 10.0.16299.0, 10.0.17134.0, 10.0.17763.0, 10.0.18362.0, 10.0.19041.0, 10.0.20348.0, 10.0.22000.0, 10.0.22621.0]
+        # exclude the SDKs, which are not available for 2022
+        exclude:
+          - os: windows-2022
+            sdk: 10.0.14393.0
+          - os: windows-2022
+            sdk: 10.0.16299.0
+          - os: windows-2022
+            sdk: 10.0.16299.0
+          - os: windows-2022
+            sdk: 10.0.17134.0
+          - os: windows-2022
+            sdk: 10.0.18362.0  
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -33,7 +42,7 @@ jobs:
         with:
           arch: x64
           sdk: ${{ matrix.sdk }}
-      - name: Run the build-with-choco.ps1 script
+      - name: Run the build-windows.ps1script
         run: pwsh -command ".\tools\build\binary-release\build-windows.ps1"
       - name: List my stuff
         run: Get-ChildItem -Exclude ".git" -Recurse
