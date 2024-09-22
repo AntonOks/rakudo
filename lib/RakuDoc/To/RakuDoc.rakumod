@@ -47,6 +47,9 @@ method !render($_, $WHY) {
         when RakuAST::Block {
             self!render-block('', $_, $WHY)
         }
+        when RakuAST::Submethod {  # must precede RakuAST::Method
+            self!render-routine('submethod', $_, $WHY)
+        }
         when RakuAST::Method {
             self!render-routine('method', $_, $WHY)
         }
@@ -64,9 +67,6 @@ method !render($_, $WHY) {
         }
         when RakuAST::Sub {
             self!render-routine('sub', $_, $WHY)
-        }
-        when RakuAST::Submethod {
-            self!render-routine('submethod', $_, $WHY)
         }
         when RakuAST::Type::Enum {
             self!render-enum($_, $WHY)
@@ -94,8 +94,8 @@ method !render-block(str $kind, $_, $WHY) {
     my str @parts = "$*SPACES=begin $type\n";
 
     $*SPACES ~= "  ";
-    @parts.push("$*SPACES=leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES=trailing $_") with $WHY.trailing;
+    @parts.push("$*SPACES$_") with $WHY.leading;
+    @parts.push("$*SPACES$_") with $WHY.trailing;
     @parts.push("\n");
 
     @parts.push(self!inspect($_)) with .rakudoc;
@@ -112,8 +112,8 @@ method !render-enum($_, $WHY) {
     my     $meta  = .meta-object;
     my str @parts = "$*SPACES=begin $type :name<$meta.raku()>\n";
 
-    @parts.push("$*SPACES  =leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES  =trailing $_") with $WHY.trailing;
+    @parts.push("$*SPACES  $_") with $WHY.leading;
+    @parts.push("$*SPACES  $_") with $WHY.trailing;
     @parts.push("$*SPACES=end $type\n\n");
     @parts.join
 }
@@ -125,29 +125,8 @@ method !render-package($_, $WHY) {
     my str @parts = "$*SPACES=begin $type :name<$_.name.canonicalize()>\n";
 
     $*SPACES ~= "  ";
-    @parts.push("$*SPACES=leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES=trailing $_") with $WHY.trailing;
-    @parts.push("\n");
-
-    @parts.push(self!inspect($_)) with .rakudoc;
-
-    $*SPACES .= chop(2);
-    @parts.push("$*SPACES=end $type\n\n");
-    @parts.join
-}
-
-#- routine ---------------------------------------------------------------------
-
-method !render-routine(str $kind, $_, $WHY) {
-    my str $type  = "doc-$kind";
-    my str $multi = .multiness
-      ?? " :$_.multiness()"
-      !! "";
-    my str @parts = "$*SPACES=begin $type$multi :name<$_.name.canonicalize()>\n";
-
-    $*SPACES ~= "  ";
-    @parts.push("$*SPACES=leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES=trailing $_") with $WHY.trailing;
+    @parts.push("$*SPACES$_") with $WHY.leading;
+    @parts.push("$*SPACES$_") with $WHY.trailing;
     @parts.push("\n");
 
     @parts.push(self!inspect($_)) with .rakudoc;
@@ -164,8 +143,29 @@ method !render-parameter($_, $WHY) {
     my     $meta  = .meta-object;
     my str @parts = "$*SPACES=begin $type :name<$meta.raku()>\n";
 
-    @parts.push("$*SPACES  =leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES  =trailing $_") with $WHY.trailing;
+    @parts.push("$*SPACES  $_") with $WHY.leading;
+    @parts.push("$*SPACES  $_") with $WHY.trailing;
+    @parts.push("$*SPACES=end $type\n\n");
+    @parts.join
+}
+
+#- routine ---------------------------------------------------------------------
+
+method !render-routine(str $kind, $_, $WHY) {
+    my str $type  = "doc-$kind";
+    my str $multi = .multiness
+      ?? " :$_.multiness()"
+      !! "";
+    my str @parts = "$*SPACES=begin $type$multi :name<$_.name.canonicalize()>\n";
+
+    $*SPACES ~= "  ";
+    @parts.push("$*SPACES$_") with $WHY.leading;
+    @parts.push("$*SPACES$_") with $WHY.trailing;
+    @parts.push("\n");
+
+    @parts.push(self!inspect($_)) with .rakudoc;
+
+    $*SPACES .= chop(2);
     @parts.push("$*SPACES=end $type\n\n");
     @parts.join
 }
@@ -177,8 +177,8 @@ method !render-subset($_, $WHY) {
     my     $meta  = .meta-object;
     my str @parts = "$*SPACES=begin $type :name<$meta.raku()>\n";
 
-    @parts.push("$*SPACES  =leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES  =trailing $_") with $WHY.trailing;
+    @parts.push("$*SPACES  $_") with $WHY.leading;
+    @parts.push("$*SPACES  $_") with $WHY.trailing;
     @parts.push("$*SPACES=end $type\n\n");
     @parts.join
 }
@@ -186,12 +186,14 @@ method !render-subset($_, $WHY) {
 #- variable --------------------------------------------------------------------
 
 method !render-variable($_, $WHY) {
-    my str $type  = "doc-variable";
-    my str @parts = "$*SPACES=begin $type :name<$_.name()>\n";
+    my str $scope = .scope;
+    my str $type  = $scope.lc eq 'has' ?? "doc-attribute" !! "doc-variable";
+    my str @parts =
+      "$*SPACES=begin $type :name<$_.name()>, :scope<$scope>\n";
 
     $*SPACES ~= "  ";
-    @parts.push("$*SPACES=leading $_")  with $WHY.leading;
-    @parts.push("$*SPACES=trailing $_") with $WHY.trailing;
+    @parts.push("$*SPACES$_") with $WHY.leading;
+    @parts.push("$*SPACES$_") with $WHY.trailing;
 
     @parts.push(self!inspect($_)) with .rakudoc;
 
