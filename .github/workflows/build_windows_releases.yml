@@ -38,7 +38,7 @@ jobs:
         with:
           arch: x64
           sdk: ${{ matrix.sdk }}
-      - name Show CL version info
+      - name: Show CL version info
         run: |
           cl /? | Select-String "Compiler Version " -CaseSensitive
       - name: Run the build-windows.ps1 script
