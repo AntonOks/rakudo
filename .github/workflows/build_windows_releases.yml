@@ -8,10 +8,10 @@ env:
   REVISION: 01
   RELEASE_URL: https://rakudo.org/dl/rakudo/rakudo-2024.08.tar.gz
 jobs:
-  build_Rakudo_Windows_Releases:
+  build:
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 7 # run 7 of 14 jobs in parallel
       matrix:
         os: [windows-2019, windows-2022]
         # see https://github.com/actions/runner-images/blob/main/images/windows/Windows2019-Readme.md#installed-windows-sdks and
@@ -33,16 +33,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      #- name: Show vsdevcmd.trace.txt
-      #  run: |
-      #    vsdevcmd.bat > vsdevcmd.trace.txt 2>&1
-      #    cat vsdevcmd.trace.txt
-      - name: Setup VS C++ Environment
+      - name: Setup VS SDK ${{ matrix.sdk }} on ${{ matrix.os }}
         uses: TheMrMilchmann/setup-msvc-dev@v3
         with:
           arch: x64
           sdk: ${{ matrix.sdk }}
-      - name: Run the build-windows.ps1script
+      - name Show CL version info
+        run: |
+          cl /? | Select-String "Compiler Version " -CaseSensitive
+      - name: Run the build-windows.ps1 script
         run: pwsh -command ".\tools\build\binary-release\build-windows.ps1"
       - name: List my stuff
         run: Get-ChildItem -Exclude ".git" -Recurse
