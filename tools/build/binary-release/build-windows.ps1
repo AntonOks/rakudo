@@ -37,7 +37,7 @@ tar -xzf download/rakudo.tgz
 cd rakudo-*
 
 echo "========= Configuring Rakudo (includes building MoarVM and NQP)"
-perl Configure.pl --gen-moar --gen-nqp --backends=moar --moar-option='--toolchain=msvc' --no-silent-build --debug=3 --relocatable
+perl Configure.pl --gen-moar --gen-nqp --backends=moar --moar-option='--toolchain=msvc' --no-silent-build --relocatable
 CheckLastExitCode
 
 echo "========= Building Rakudo"
