@@ -22,11 +22,18 @@ echo "========= Starting build"
 echo "========= Downloading Perl"
 mkdir download
 mkdir strawberry
-Invoke-WebRequest http://strawberryperl.com/download/5.30.0.1/strawberry-perl-5.30.0.1-64bit.zip -OutFile download/strawberry-perl-5.30.0.1-64bit.zip
+
+# Invoke-WebRequest http://strawberryperl.com/download/5.30.0.1/strawberry-perl-5.30.0.1-64bit.zip -OutFile download/strawberry-perl-5.30.0.1-64bit.zip
+Invoke-WebRequest https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_53822_64bit/strawberry-perl-5.38.2.2-64bit-portable.zip -OutFile download/strawberry-perl.zip
+
+# Invoke-WebRequest https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54001_64bit_UCRT/strawberry-perl-5.40.0.1-64bit-portable.zip -OutFile download/strawberry-perl.zip
+
 
 echo "========= Extracting Perl"
-Expand-Archive -Path download/strawberry-perl-5.30.0.1-64bit.zip -DestinationPath strawberry
-strawberry\relocation.pl.bat
+Expand-Archive -Path download/strawberry-perl.zip -DestinationPath strawberry
+# strawberry\relocation.pl.bat
+strawberry\portableshell.bat
+
 $Env:PATH = (Join-Path -Path $repoPath -ChildPath "\strawberry\perl\bin") + ";" + (Join-Path -Path $repoPath -ChildPath "\strawberry\perl\site\bin") + ";" + (Join-Path -Path $repoPath -ChildPath "\strawberry\c\bin") + ";$Env:PATH"
 
 echo "========= Downloading release"
@@ -41,7 +48,7 @@ perl Configure.pl --gen-moar --gen-nqp --backends=moar --moar-option='--toolchai
 CheckLastExitCode
 
 echo "========= Building Rakudo"
-nmake install
+nmake /D /P install
 CheckLastExitCode
 
 echo "========= Testing Rakudo"
