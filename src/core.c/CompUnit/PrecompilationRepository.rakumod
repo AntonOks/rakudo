@@ -265,7 +265,7 @@ Need to re-check dependencies.")
         Array[CompUnit::PrecompilationStore].new($.store),
     ) {
         self.load(
-          CompUnit::PrecompilationId.new($id), :$since, :@precomp-stores)
+          CompUnit::PrecompilationId.new($id), :$since, :$source, :@precomp-stores)
     }
 
     multi method load(

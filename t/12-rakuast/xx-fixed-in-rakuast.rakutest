@@ -2,7 +2,7 @@ use Test;
 use lib <t/packages/Test-Helpers>;
 use Test::Helpers;
 
-plan 38;
+plan 44;
 
 # t/spec/S03-sequence/misc.t
 # https://github.com/rakudo/rakudo/issues/5520
@@ -232,6 +232,51 @@ plan 38;
 {
     todo "compilation error in legacy grammar" unless %*ENV<RAKUDO_RAKUAST>;
     is (try 'our Str $a = "foo"'.EVAL), "foo", 'can have constraint on "our" variable';
+}
+
+# https://github.com/rakudo/rakudo/issues/1898
+{
+    my @m = [1,2,3],[2,6,10],[3,12,21];
+    for @m -> @r {
+        my $div = @r[0];
+        @r X/= $div;
+    }
+    todo "handling of X/= when sunk" unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply @m, [[1.0, 2.0, 3.0], [1.0, 3.0, 5.0], [1.0, 4.0, 7.0]],
+      'handled X/= correctly';
+}
+
+# https://github.com/rakudo/rakudo/issues/1947
+{
+    my $ran;
+    my sub a (IO(Cool:D) $) { $ran = True };
+    a "foo".IO;
+    todo "dispatch on coercion from Cool:D" unless %*ENV<RAKUDO_RAKUAST>;
+    ok $ran, 'dispatch went correctly';
+}
+
+# https://github.com/rakudo/rakudo/issues/1986
+{
+    my $a;
+    try Q/42 R[||]= $a/.EVAL;
+    todo "R[||]= doesn't compile" unless %*ENV<RAKUDO_RAKUAST>;
+    is $a, 42, 'did R[||]= work';
+
+    my $b;
+    try Q/666 R[&&]= $b/.EVAL;
+    todo "R[&&]= doesn't compile" unless %*ENV<RAKUDO_RAKUAST>;
+    is $b, 666, 'did R[&&]= work';
+
+    my $c;
+    try Q|137 R[//]= $c|.EVAL;
+    todo "R[//]= doesn't compile" unless %*ENV<RAKUDO_RAKUAST>;
+    is $c, 137, 'did R[//]= work';
+}
+
+# https://github.com/rakudo/rakudo/issues/2034
+{
+    todo "signature smartmatch doesn't compile" unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply (try ":(<a>) ~~ :()".EVAL), False, 'signature smartmatch ok';
 }
 
 # vim: expandtab shiftwidth=4
