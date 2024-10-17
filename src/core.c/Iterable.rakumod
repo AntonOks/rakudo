@@ -18,11 +18,14 @@ my role Iterable {
         nqp::p6bindattrinvres(nqp::create(Scalar), Scalar, '$!value', self)
     }
 
-    method flat(Iterable:D: $levels = Whatever, :$hammer = False) {
+    multi method flat(Iterable:U: $?) { (self,) }
+    multi method flat(Iterable:D: $levels = Whatever, :$hammer = False) {
         Seq.new: Rakudo::Iterator.Flat: self.iterator, $levels, $hammer
     }
 
-    method lazy-if($flag) { $flag ?? self.lazy !! self }
+    method lazy-if($flag) is implementation-detail {
+        $flag ?? self.lazy !! self
+    }
 
     method lazy() {
         # Return a Seq with an iterator wrapping this Iterable, claiming to

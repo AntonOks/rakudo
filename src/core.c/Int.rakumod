@@ -264,9 +264,12 @@ my class Int does Real { # declared in BOOTSTRAP
             #when uint1  { Range.new( 0, 1                    ) }
 
             default {  # some other kind of Int
-                .^name eq 'UInt'
+                my str $name = .^name;
+                $name eq 'UInt'
                   ?? Range.new(    0, Inf, :excludes-max )
-                  !! Range.new( -Inf, Inf, :excludes-min, :excludes-max )
+                  !! $name eq 'atomicint'
+                    ?? ($?BITS == 64 ??  int64.Range !!  int32.Range)
+                    !! Range.new( -Inf, Inf, :excludes-min, :excludes-max )
             }
         }
     }
@@ -276,35 +279,57 @@ my class Int does Real { # declared in BOOTSTRAP
         $_ >= 0x8000000000000000 ?? $_ - 0x10000000000000000 !! $_
     }
 
-    method int  (--> int  ) is raw { my int   $a = self!int; $a }
-    method int64(--> int64) is raw { my int64 $a = self!int; $a }
-    method int32(--> int32) is raw { my int32 $a = self!int; $a }
-    method int16(--> int16) is raw { my int16 $a = self!int; $a }
-    method int8( --> int8 ) is raw { my int8  $a = self!int; $a }
+    method int  (--> int  ) is raw { my int   $ = self!int }
+    method int64(--> int64) is raw { my int64 $ = self!int }
+    method int32(--> int32) is raw { my int32 $ = self!int }
+    method int16(--> int16) is raw { my int16 $ = self!int }
+    method int8( --> int8 ) is raw { my int8  $ = self!int }
 
     method uint  (--> uint  ) is raw {
+        # fixed in RakuAST
+#        my uint   $ = nqp::bitand_I(self, 0xffffffffffffffff, Int)
         my uint   $a = nqp::bitand_I(self, 0xffffffffffffffff, Int);
         $a
     }
-    method uint64(--> uint32) is raw {
+    method uint64(--> uint64) is raw {
+        # fixed in RakuAST
+#        my uint64 $ = nqp::bitand_I(self, 0xffffffffffffffff, Int)
         my uint64 $a = nqp::bitand_I(self, 0xffffffffffffffff, Int);
         $a
     }
     method uint32(--> uint32) is raw {
-        my uint32 $a = nqp::bitand_I(self, 0x00000000ffffffff, Int);
-        $a
+        my uint32 $ = nqp::bitand_I(self, 0x00000000ffffffff, Int)
     }
     method uint16(--> uint16) is raw {
-        my uint16 $a = nqp::bitand_I(self, 0x000000000000ffff, Int);
-        $a
+        my uint16 $ = nqp::bitand_I(self, 0x000000000000ffff, Int)
     }
     method uint8( --> uint8 ) is raw {
-        my uint8  $a = nqp::bitand_I(self, 0x00000000000000ff, Int);
-        $a
+        my uint8  $ = nqp::bitand_I(self, 0x00000000000000ff, Int)
     }
     method byte(  --> byte  ) is raw {
-        my byte   $a = nqp::bitand_I(self, 0x00000000000000ff, Int);
-        $a
+        my byte   $ = nqp::bitand_I(self, 0x00000000000000ff, Int)
+    }
+
+    method power-up(Int:D $b) is implementation-detail {
+        # when a**b is too big nqp::pow_I returns Inf
+        nqp::istype((my $power := nqp::pow_I(self,$b,Num,Int)),Int)
+          ?? $power
+          !! X::Numeric::Overflow.new.Failure
+    }
+
+    method power-down(Int:D $b) is implementation-detail {
+        # when a**b is too big nqp::pow_I returns Inf
+        nqp::istype(
+          (my $power := nqp::pow_I(self,nqp::neg_I($b,Int),Num,Int)),
+          Num
+        ) || (nqp::istype(
+               ($power := CREATE_RATIONAL_FROM_INTS(1, $power, Int, Int)),
+               Num
+             ) && nqp::iseq_n($power,0e0)
+               && nqp::isne_I(self,0)
+             )
+          ?? X::Numeric::Underflow.new.Failure
+          !! $power
     }
 }
 
@@ -427,16 +452,7 @@ multi sub infix:<%%>(uint $a, uint $b --> Bool:D) {
 }
 
 multi sub infix:<**>(Int:D $a, Int:D $b --> Real:D) {
-    nqp::isge_I($b,0)
-      # when a**b is too big nqp::pow_I returns Inf
-      ?? nqp::istype((my $power := nqp::pow_I($a,$b,Num,Int)),Int)
-        ?? $power
-        !! X::Numeric::Overflow.new.Failure
-      # when a**b is too big nqp::pow_I returns Inf
-      !! nqp::istype(($power := nqp::pow_I($a,nqp::neg_I($b,Int),Num,Int)),Num) ||
-         (nqp::istype(($power := CREATE_RATIONAL_FROM_INTS(1, $power, Int, Int)),Num) && nqp::iseq_n($power,0e0) && nqp::isne_I($a,0))
-        ?? X::Numeric::Underflow.new.Failure
-        !! $power
+    nqp::isge_I($b,0) ?? $a.power-up($b) !! $a.power-down($b)
 }
 multi sub infix:<**>( int $a,  int $b --> int)  { nqp::pow_i($a, $b) }
 multi sub infix:<**>(uint $a, uint $b --> uint) { nqp::pow_i($a, $b) }

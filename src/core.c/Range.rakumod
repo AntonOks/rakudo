@@ -161,7 +161,7 @@ my class Range is Cool does Iterable does Positional {
                )
             !! $!min === Inf
               # doesn't make much sense, but there you go
-              ?? NegativeInf.new
+              ?? Rakudo::Iterator.Empty()
               !! $!max === Inf
                 ?? nqp::istype($!min, Numeric)
                   # something quick and easy for 1..* style things
@@ -192,14 +192,18 @@ my class Range is Cool does Iterable does Positional {
     }
 
     multi method list(Range:D:) { List.from-iterator(self.iterator) }
-    method flat(Range:D:) { Seq.new(self.iterator) }
+    multi method flat(Range:D:) { Seq.new(self.iterator) }
 
     my class NativeIntReverse does PredictiveIterator {
         has int $!i;
         has int $!n;
 
         method !SET-SELF(\i,\n) { $!i = i + 1; $!n = n; self }
-        method new(\i,\n)   { nqp::create(self)!SET-SELF(i,n) }
+        method new(\i,\n) {
+            i < n
+              ?? Rakudo::Iterator.Empty
+              !! nqp::create(self)!SET-SELF(i,n)
+        }
 
         method pull-one() { ( $!i = $!i - 1 ) >= $!n ?? $!i !! IterationEnd }
         method skip-one() { ( $!i = $!i - 1 ) >= $!n }

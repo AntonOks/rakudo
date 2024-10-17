@@ -1148,12 +1148,32 @@ my class X::Trait::Invalid does X::Trait {
 my class X::Comp::Trait::Invalid is X::Trait::Invalid does X::Comp { };
 
 my class X::Trait::Unknown does X::Trait {
+    my constant %forgotten =
+      "is" => Map.new((
+        cached         => 'experimental :cached',
+        cpp-const      => 'NativeCall',
+        cpp-ref        => 'NativeCall',
+        encoded        => 'NativeCall',
+        mangled        => 'NativeCall',
+        native         => 'NativeCall',
+        nativeconv     => 'NativeCall',
+        symbol         => 'NativeCall',
+        test-assertion => 'Test',
+      )),
+      "will" => Map.new((
+        complain => 'experimental :will-complain',
+      )),
+    ;
+
     method message () {
-        "Can't use unknown trait '{
-            try { $.type } // "unknown type"
-        }' -> '{
-            try { $.subtype } // "unknown subtype"
-        }' in $.declaring declaration."
+        my str $type    = (try $.type )    // "unknown type";
+        my str $subtype = (try $.subtype ) // "unknown subtype";
+
+        my str $message = "Can't use unknown trait '$type' -> '$subtype' in $.declaring declaration.";
+
+        (my $forgotten := %forgotten{$type}{$subtype})
+          ?? "$message\nDid you forget 'use $forgotten'?"
+          !! $message
     }
 }
 my class X::Comp::Trait::Unknown is X::Trait::Unknown does X::Comp { };
@@ -1333,19 +1353,21 @@ my class X::Undeclared::Symbols does X::Comp {
             }
         }
         if %.unk_routines {
-            my $obs = {
-                y => "tr",
-                qr => "rx",
-                local => "temp (or dynamic var)",
-                new => "method call syntax",
-                foreach => "for",
-                use => '"v" prefix for pragma (e.g., "use v6;", "use v6.c;")',
-                need => '"v" prefix and "use" for pragma (e.g., "use v6;", "use v6.c;")',
-            }
+            my constant %obs =
+              y       => "'tr'",
+              qr      => "'rx'",
+              local   => "temp (or dynamic var)",
+              new     => "method call syntax",
+              foreach => "'for'",
+              use     => '"v" prefix for pragma (e.g., "use v6;", "use v6.c;")',
+              need    => '"v" prefix and "use" for pragma (e.g., "use v6;", "use v6.c;")',
+              quit    => "'exit'",
+            ;
+
             $r ~= "Undeclared routine" ~ (%.unk_routines.elems == 1 ?? "" !! "s") ~ ":\n";
             for %.unk_routines.sort(*.key) {
                 $r ~= "    $_.key() &l($_.value)";
-                $r ~= " (in Raku please use " ~ $obs{$_.key()} ~ " instead)" if $obs{$_.key()};
+                $r ~= " (in Raku please use $_ instead)" with %obs{$_.key};
                 if +%.routine_suggestion{$_.key()}.list {
                     $r ~= ". " ~ s(%.routine_suggestion{$_.key()}.list);
                 }
