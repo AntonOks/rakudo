@@ -2,7 +2,7 @@ use Test;
 use lib <t/packages/Test-Helpers>;
 use Test::Helpers;
 
-plan 76;
+plan 89;
 
 # t/spec/S03-sequence/misc.t
 # https://github.com/rakudo/rakudo/issues/5520
@@ -433,7 +433,7 @@ subtest 'use of &?ROUTINE and &?BLOCK' => {
 
 # https://github.com/rakudo/rakudo/issues/3626
 {
-    my $defined; 
+    my $defined;
     my sub foo () {
         loop {
             state $n = 0;
@@ -531,6 +531,64 @@ subtest 'use of &?ROUTINE and &?BLOCK' => {
     multi d(Int:D $x) { $x     }
     multi d(int $x)   { $x + 1 }
     is d(0), 0, 'Int:D candidate selected';
+}
+
+# https://github.com/rakudo/rakudo/issues/4757
+{
+    my sub infix:<foo>($a, $b) is assoc<right> { "($a,$b)" }
+    my sub infix:<bar>($a, $b) is assoc<left>  { "($a,$b)" }
+
+    is-deeply ([foo]  1, 2, 3, 4), "(1,(2,(3,4)))", 'foo';
+    is-deeply ([Rfoo] 1, 2, 3, 4), "(4,(3,(2,1)))", 'Rfoo';
+    is-deeply ([bar]  1, 2, 3, 4), "(((1,2),3),4)", 'bar';
+    todo "gets associativity wrong" unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply ([Rbar] 1, 2, 3, 4), "(4,(3,(2,1)))", 'Rbar';
+}
+
+# https://github.com/rakudo/rakudo/issues/4797
+{
+    my int $test;
+    my sub f (|c) is test-assertion {
+        is-deeply c, \(:foo), ':foo test ' ~ ++$test;
+    }
+
+    f :foo(  'a'  ne 'd');
+    f foo => 'a'  ne 'd';
+    todo "passes positional instead of named", 2 unless %*ENV<RAKUDO_RAKUAST>;
+    f :foo(  'a' !eq 'd');
+    f foo => 'a' !eq 'd';
+}
+
+# https://github.com/rakudo/rakudo/issues/4847
+{
+    todo "does not compile" unless %*ENV<RAKUDO_RAKUAST>;
+    lives-ok { 'if 42 { } elsif "/knorkator".IO andthen .f && .r { }'.EVAL },
+      'can have andthen as part of an elseif';
+}
+
+# https://github.com/rakudo/rakudo/issues/4904
+{
+    my class C {
+        method add($x) { $!x += $x }
+        has int $.x
+    }
+    my $c = C.new;
+    is-deeply $c.x, 0, 'can access attribute';
+    todo "throws error" unless %*ENV<RAKUDO_RAKUAST>;
+    lives-ok { $c.add(1) }, 'can add to the attribute';
+    todo "did not get updated" unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply $c.x, 1, 'attribute got incremented';
+}
+
+# https://github.com/rakudo/rakudo/issues/5056
+{
+    class Value { method COERCE() { Value } }
+
+    multi foo(Hash:D) { "yes" };
+    multi foo(Value(Any:D)) { "no" };
+
+    todo "dispatch error" unless %*ENV<RAKUDO_RAKUAST>;
+    is (try foo { :foo }), "yes", "dispatch worked ok";
 }
 
 # vim: expandtab shiftwidth=4
