@@ -122,7 +122,7 @@ do {
 
         method repl-read(Mu \prompt) {
             self.update-completions;
-            my $line = $cli.prompt(prompt);
+            my $line = $cli.prompt(prompt.chop);
 
             if $line.defined && $line.match(/\S/) {
                 $cli.add-history($line);
@@ -280,17 +280,6 @@ do {
 
             ( $new-self, $problem ) = mixin-terminal-lineeditor($self);
             return $new-self if $new-self;
-
-            # Try wrapping rlwrap for a more seamless experience
-            unless %*ENV<_>.ends-with('rlwrap') {
-                %*ENV<_>                 := 'rlwrap';
-                %*ENV<RAKUDO_NO_VERSION> := 1;
-                my $proc :=
-                  run "rlwrap", $*EXECUTABLE, "--repl-mode=interactive", @*ARGS;
-                $proc.exitcode
-                  ?? (%*ENV<_>:delete)
-                  !! exit;
-            }
 
             if $problem {
                 say "Continuing without tab completions or line editor.\n";
@@ -563,6 +552,11 @@ do {
 sub repl(*%_) {
     my $repl := REPL.new(nqp::getcomp("Raku"), %_, True);
     nqp::bindattr($repl,REPL,'$!save_ctx',nqp::ctxcaller(nqp::ctx));
+
+    # act as is we're already inside rlwrap so that we don't proc out
+    # to another "raku" executable and thus lose all of the environment
+    %*ENV<_> = 'rlwrap';
+
     $repl.repl-loop(:no-exit);
 }
 

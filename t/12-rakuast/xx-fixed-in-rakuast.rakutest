@@ -2,7 +2,7 @@ use Test;
 use lib <t/packages/Test-Helpers>;
 use Test::Helpers;
 
-plan 89;
+plan 104;
 
 # t/spec/S03-sequence/misc.t
 # https://github.com/rakudo/rakudo/issues/5520
@@ -589,6 +589,111 @@ subtest 'use of &?ROUTINE and &?BLOCK' => {
 
     todo "dispatch error" unless %*ENV<RAKUDO_RAKUAST>;
     is (try foo { :foo }), "yes", "dispatch worked ok";
+}
+
+# https://github.com/rakudo/rakudo/issues/5100
+{
+    my $proc := run $*EXECUTABLE, '-e', 'sub MAIN( $a, $b = $a, #= boom
+) {}', :out, :err;
+    is $proc.out.slurp, "", 'no output';
+    todo "execution error" unless %*ENV<RAKUDO_RAKUAST>;
+    ok $proc.err.slurp.starts-with("Usage"), 'error message is about usage';
+}
+
+# https://github.com/rakudo/rakudo/issues/5147
+{
+    todo "no val processing" unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply qq:v:to/FOO/, IntStr.new(42, "42\n"), "val processing kept";
+    42
+    FOO
+}
+
+# https://github.com/rakudo/rakudo/issues/5329
+{
+    my %m = "a" => 1, "b" => 2, "c" => 3;
+    my subset X2 of Str() where * (elem) %m;
+    sub t2 (X2 $x) { }
+    if %*ENV<RAKUDO_RAKUAST> {
+        lives-ok { ("a" .. "c").hyper(:batch(1), :degree(2)).map(&t2) },
+          "should not crash with typecheck error";
+    }
+    else {
+        todo "crashes";
+        flunk "should not crash with typecheck error";
+    }
+}
+
+# https://github.com/rakudo/rakudo/issues/5391
+{
+    todo "compilation error" unless %*ENV<RAKUDO_RAKUAST>;
+    lives-ok { 'use variables :D; my int $a'.EVAL },
+      'native integers do not require an initializer with variables:D';
+    todo "typecheck error" unless %*ENV<RAKUDO_RAKUAST>;
+    lives-ok { 'use variables :D; my int $a = 42'.EVAL },
+      'native integers can be initialized  with variables:D';
+}
+
+# https://github.com/rakudo/rakudo/issues/5599
+{
+    my enum E <one>;
+    my role R {
+        has $.e = one;
+        method m() {
+            todo "attribute not initialized" unless %*ENV<RAKUDO_RAKUAST>;
+            ok $!e === one, 'attribute got initialized ok';
+        }
+    }
+    R.new.m;
+}
+
+# https://github.com/rakudo/rakudo/issues/1616
+{
+    todo "does not compile" unless %*ENV<RAKUDO_RAKUAST>;
+    isa-ok (try Q|&[RRRRRRRRZZZZZZZZZZZZZZZZZZRRRRRRRRRSSSSSSSS+]|.EVAL), Block,
+      'auto generated Callable ok';
+}
+
+# https://github.com/rakudo/rakudo/issues/1691
+{
+    todo "throws execution error" unless %*ENV<RAKUDO_RAKUAST>;
+    lives-ok { eager do loop { last } }, 'exits loop as expected';
+}
+
+# https://github.com/rakudo/rakudo/issues/1768
+{
+    my sub z { is &?ROUTINE.name, "z", 'name is ok' for ^1 }
+    todo "name empty" unless %*ENV<RAKUDO_RAKUAST>;
+    z;
+}
+
+# https://github.com/rakudo/rakudo/issues/1871
+{
+    todo "throws wrong error" unless %*ENV<RAKUDO_RAKUAST>;
+    throws-like { Q|1.::(1)|.EVAL }, X::Syntax::Number::IllegalDecimal,
+      "throws an illegal decimal error";
+}
+
+# https://github.com/rakudo/rakudo/issues/1965
+{
+    todo "throws wrong error", 2 unless %*ENV<RAKUDO_RAKUAST>;
+    try throws-like { Q|role R { }; &R|.EVAL }, X::Undeclared::Symbols,
+      unk_routines => { '&R' => (1,) },
+      "throws undeclared error";
+    try throws-like { Q|class C { }; &C|.EVAL }, X::Undeclared::Symbols,
+      unk_routines => { '&C' => (1,) },
+      "throws undeclared error";
+}
+
+# https://github.com/rakudo/rakudo/issues/5249
+{
+    todo "throws compilation error" unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply (try Q|"@.x"|.EVAL), '@.x', 'interpolation of non-existing @!x';
+}
+
+# https://github.com/rakudo/rakudo/issues/5119
+{
+    todo 'scoping issue with interpolated { }' unless %*ENV<RAKUDO_RAKUAST>;
+    is-deeply ("{$_}" for ^1).join, "0", 'was $_ set to 0';
 }
 
 # vim: expandtab shiftwidth=4

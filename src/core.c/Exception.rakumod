@@ -3192,8 +3192,11 @@ my class X::Import::NoSuchTag is Exception {
 my class X::Import::Positional is Exception {
     has $.source-package;
     method message() {
-        "Error while importing from '$.source-package':\n"
-        ~ "no EXPORT sub, but you provided positional argument in the 'use' statement"
+        "Error while importing from '$.source-package': no EXPORT sub was
+        provided by that distribution, but you appear to have provided a
+        positional argument in the 'use' statement.  Maybe the 'use'
+        statement was not terminated?"
+          .naive-word-wrapper
     }
 }
 
@@ -3331,7 +3334,8 @@ my class X::Multi::Ambiguous is Exception {
             "Ambiguous call to '$.dispatcher.name()$cap'; these signatures all match:",
             @.ambiguous.map: {
                 my $sig := .signature.raku.substr(1).subst(/ \s* "-->" <-[)]>+ /);
-                .?default ?? "  $sig is default" !! "  $sig"
+                (.?default ?? "  $sig is default" !! "  $sig")
+                  ~ " from $_.file() line $_.line()"
             }
     }
 }

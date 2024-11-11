@@ -255,7 +255,7 @@ multi sub infix:<%%>() { "infix:<%%>".no-zero-arg }
 multi sub infix:<%%>($ --> True) { }
 multi sub infix:<%%>(\a, \b) {
     b
-      ?? (Rakudo::Internals.compare-as-Real(&[%%], a, b) == 0)
+      ?? (Rakudo::Internals.compare-as-Real(&[%], a, b) == 0)
       !! X::Numeric::DivideByZero.new(
            using => 'infix:<%%>', numerator => a
          ).Failure

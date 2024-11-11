@@ -44,7 +44,7 @@ my class Seq is Cool does Iterable does Sequence {
         self.List.Capture
     }
 
-    method elems() {
+    multi method elems(Seq:D:) {
         self.is-lazy
           ?? self.fail-iterator-cannot-be-lazy('.elems',"")
           !! nqp::isconcrete($!iter) && nqp::istype($!iter,PredictiveIterator)
@@ -68,6 +68,8 @@ my class Seq is Cool does Iterable does Sequence {
           ?? $!iter.bool-only
           !! self.cache.Bool
     }
+
+    multi method sort(Seq:D: |c) { self.List.sort(|c) }
 
     multi method raku(Seq:D \SELF:) {
         # If we don't have an iterator, someone grabbed it already;

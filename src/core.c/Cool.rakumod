@@ -170,43 +170,22 @@ my class Cool { # declared in BOOTSTRAP
     multi method substr(Cool:D: \from, \chars) { self.Str.substr(from,chars) }
 
     proto method substr-rw(|) {*}
+    multi method substr-rw(Cool:D $container is rw: |c) is rw {
+        ($container = self.Str).substr-rw(|c)
+    }
     multi method substr-rw(Cool:D: |) {
         Failure.new("'substr-rw' requires a writeable container")
     }
-    multi method substr-rw(Cool:D $SELF is rw:) is rw {
-        ($SELF = self.Str).substr-rw
-    }
-    multi method substr-rw(Cool:D $SELF is rw: \from) is rw {
-        ($SELF = self.Str).substr-rw(from)
-    }
-    multi method substr-rw(Cool:D $SELF is rw: \from, \want) is rw {
-        ($SELF = self.Str).substr-rw(from, want)
-    }
 
     proto method substr-eq(|) {*}
-    multi method substr-eq(Cool:D:
-      Cool:D $needle, :i(:$ignorecase)!, :m(:$ignoremark) --> Bool:D) {
-        self.Str.starts-with($needle.Str, :$ignorecase, :$ignoremark)
+    multi method substr-eq(Cool:D: Any:D $needle) {
+        self.Str.starts-with($needle.Str, |%_)
     }
-    multi method substr-eq(Cool:D:
-      Cool:D $needle, :m(:$ignoremark) --> Bool:D) {
-        self.Str.starts-with($needle.Str, :$ignoremark)
+    multi method substr-eq(Cool:D: Any:D $needle, Cool:D $pos) {
+        self.Str.substr-eq($needle.Str, $pos.Int, |%_)
     }
-    multi method substr-eq(Cool:D: Cool:D $needle --> Bool:D) {
-        self.Str.starts-with($needle.Str)
-    }
-
-    multi method substr-eq(Cool:D:
-      Cool:D $needle, Cool:D $pos, :i(:$ignorecase)!, :m(:$ignoremark)
-    --> Bool:D) {
-        self.Str.substr-eq($needle.Str, $pos.Int, :$ignorecase, :$ignoremark)
-    }
-    multi method substr-eq(Cool:D:
-      Cool:D $needle, Cool:D $pos, :m(:$ignoremark)!  --> Bool:D) {
-        self.Str.substr-eq($needle.Str, $pos.Int, :$ignoremark)
-    }
-    multi method substr-eq(Cool:D: Cool:D $needle, Cool:D $pos --> Bool:D) {
-        self.Str.substr-eq($needle.Str, $pos.Int)
+    multi method substr-eq(Cool:D: Any:D $needle, Any:D $pos) {
+        self.Str.substr-eq($needle.Str, $pos, |%_)
     }
 
     method !list-as-string($suggestion) is hidden-from-backtrace {

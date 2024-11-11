@@ -1,5 +1,6 @@
 # necessary stubs
 my class X::Range::CannotIterate { ... }
+my class X::Numeric::DivideByZero { ... }
 
 # This class contains generally usable methods creating Iterators.
 # There are two reasons for having this in a separate class:
@@ -823,7 +824,7 @@ class Rakudo::Iterator {
             $!n = n;
             $!k = k;
             $!b = b;
-            $!stack       := nqp::list_i(0);
+            $!stack := nqp::list_i(0);
             $!combination := nqp::create(IterationBuffer);
             self
         }
@@ -836,26 +837,36 @@ class Rakudo::Iterator {
             my $combination := $!combination;
             my $stack       := $!stack;
 
-            my int $index;
-            my int $value;
+            nqp::while(
+              ($running && (my int $elems = nqp::elems($stack))),
+              nqp::stmts(
+                (my int $index = $elems - 1),
+                (my int $value = nqp::pop_i($stack)),
+                nqp::while(
+                  nqp::islt_i($value,$n) && nqp::islt_i($index,$k),
+                  nqp::stmts(
+                    nqp::bindpos($combination,$index,nqp::clone($value)),
+                    ++$index,
+                    ++$value,
+                    nqp::push_i($stack,$value)
+                  )
+                ),
+                ($running = nqp::isne_i($index,$k)),
+              )
+            );
 
-            while $running && nqp::elems($stack) -> int $elems {
-                $index = $elems - 1;
-                $value = nqp::pop_i($stack);
-                while $value < $n && $index < $k {
-                    nqp::bindpos($combination, $index++, nqp::clone($value));
-                    nqp::push_i($stack, ++$value);
-                }
-                $running = $index != $k;
-            }
-
-            if $index == $k {
-                ++$!pulled-count;
-                nqp::clone($!b ?? $combination !! $combination.List)
-            }
-            else {
-                IterationEnd
-            }
+            nqp::if(
+              nqp::iseq_i($index,$k),
+              nqp::stmts(
+                ++$!pulled-count,
+                nqp::if(
+                  $!b,
+                  nqp::clone($combination),
+                  nqp::clone($combination).List
+                )
+              ),
+              IterationEnd
+            )
         }
 
         method count-only(--> Int:D) {
@@ -1849,7 +1860,8 @@ class Rakudo::Iterator {
             );
 
             nqp::if(
-              nqp::istype($pulled,Iterable)
+              nqp::isconcrete($pulled)
+                && nqp::istype($pulled,Iterable)
                 && @!next.elems < $!levels
                 && $!decont >= nqp::iscont($pulled),
               nqp::stmts(
@@ -1874,7 +1886,12 @@ class Rakudo::Iterator {
     method Flat(\iterator, $levels, $decont) {
         Flat.new(
           iterator,
+#?if !jvm
           nqp::istype($levels,Whatever) || $levels == Inf ?? -1 !! $levels.Int,
+#?endif
+#?if jvm
+          nqp::istype($levels,Whatever) || $levels == Inf ?? int.Range.max !! $levels.Int,
+#?endif
           $decont.Int
         )
     }
@@ -3483,6 +3500,110 @@ class Rakudo::Iterator {
               )
             # See: https://en.wikipedia.org/wiki/Permutation#Generation_in_lexicographic_order
             !! Permutations.new($n,$b)
+    }
+
+    # helper sub to reduce footprint for fast path
+    my sub divide-by-zero($numerator --> Nil) {
+        X::Numeric::DivideByZero.new(:using<polymod>, :$numerator).Failure
+    }
+
+    # A role for handling the .polymod functionality, with the actual pull
+    # logic to be provided by the client
+    my role Polymod does Iterator {
+        has $!numerator;
+        has $!iterator;
+
+        method new($numerator, $iterator) {
+            my $self := nqp::create(self);
+            nqp::bindattr($self,$?CLASS,'$!numerator',nqp::decont($numerator));
+            nqp::bindattr($self,$?CLASS,'$!iterator', nqp::decont($iterator));
+            $self
+        }
+
+        method done() {
+            my $value   := $!numerator;
+            $!numerator := nqp::null;
+            $value
+        }
+
+        method pull-one() { ... }
+    }
+
+    # Return an iterator for handling Int.polymod
+    my class IntPolymod does Polymod {
+        method pull-one() {
+            nqp::if(
+              nqp::isnull($!numerator),
+              IterationEnd,
+              nqp::if(                          # not yet done
+                nqp::eqaddr(
+                  (my $mod := nqp::decont($!iterator.pull-one)),
+                  IterationEnd
+                ),
+                self.done,                      # no more mods, so done
+                nqp::if(                        # got a mod
+                  $mod > 1,
+                  nqp::stmts(                   # an actable mod
+                    (my $value := $!numerator mod $mod),
+                    nqp::bindattr(self,IntPolymod,'$!numerator',
+                      ($!numerator div $mod) || nqp::null
+                    ),
+                    $value
+                  ),
+                  nqp::if(                      # not an actable mod
+                    $mod,
+                    self.done,                  # 1
+                    divide-by-zero($!numerator) # kaboom
+                  )
+                )
+              )
+            )
+        }
+    }
+
+    # Return an iterator for handling Real.polymod
+    my class RealPolymod does Polymod {
+        method pull-one() {
+            nqp::if(
+              nqp::isnull($!numerator),
+              IterationEnd,
+              nqp::if(                          # not yet done
+                nqp::eqaddr(
+                  (my $mod := nqp::decont($!iterator.pull-one)),
+                  IterationEnd
+                ),
+                self.done,                      # no more mods, so done
+                nqp::if(                        # got a mod
+                  $mod == 1,
+                  self.done,                    # done
+                  nqp::if(                      # possibly an actable mod
+                    $mod,
+                    nqp::stmts(                 # an actable mod
+                      (my $value     := $!numerator % $mod),
+                      (my $numerator := $!numerator - $value),
+                      nqp::bindattr(self,IntPolymod,'$!numerator',
+                        ($numerator / $mod) || nqp::null
+                      ),
+                      $value
+                    ),
+                    divide-by-zero($!numerator) # kaboom
+                  )
+                )
+              )
+            )
+        }
+    }
+
+    # Access method, checking for valid value to work with
+    method Polymod(Numeric:D $got, @mods) {
+        $got < 0
+          ?? X::OutOfRange.new(
+               :what('invocant to polymod'), :$got, :range<0..^Inf>
+             ).Failure
+          !! Seq.new:
+               (nqp::istype($got,Int) ?? IntPolymod !! RealPolymod).new(
+                 $got, @mods.iterator
+               )
     }
 
     # Return an iterator for an Array that has been completely reified

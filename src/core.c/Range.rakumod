@@ -122,7 +122,7 @@ my class Range is Cool does Iterable does Positional {
         0 <= $pos < self.elems;
     }
 
-    method elems {
+    multi method elems(Range:D:) {
         $!is-int
           ?? 0 max $!max - $!excludes-max - $!min - $!excludes-min + 1
           !! $!infinite
@@ -145,54 +145,68 @@ my class Range is Cool does Iterable does Positional {
         method is-monotonically-increasing(--> True) { }
     }
 
+    proto method generic-string-sequence(|) is implementation-detail {*}
+    # In 6.c/d we use the magic sequence, identical to ...
+    # See https://github.com/rakudo/rakudo/issues/2238
+    multi method generic-string-sequence() {
+        SEQUENCE(
+          ($!excludes-min ?? $!min.succ !! $!min),
+          $!max,
+          :exclude_end($!excludes-max)
+        )
+    }
+
     method iterator() {
-        $!min after $!max
-          # nothing to iterate over
-          ?? Rakudo::Iterator.Empty()
-          !! nqp::istype($!min,Int)
-            && nqp::not_i(nqp::isbig_I(nqp::decont($!min)))
-            && ((nqp::istype($!max,Int)
-                 && nqp::not_i(nqp::isbig_I(nqp::decont($!max))))
-                 || $!max == Inf)
-            # can use native ints
-            ?? Rakudo::Iterator.IntRange(
-                 $!min + $!excludes-min,
-                 $!max - $!excludes-max
-               )
-            !! $!min === Inf
-              # doesn't make much sense, but there you go
-              ?? Rakudo::Iterator.Empty()
-              !! $!max === Inf
-                ?? nqp::istype($!min, Numeric)
-                  # something quick and easy for 1..* style things
-                  ?? NumFromInf.new($!min + $!excludes-min)
-                  # open-ended general case
-                  !! Rakudo::Iterator.SuccFromInf(
-                       $!excludes-min ?? $!min.succ !! $!min
-                     )
-                !! nqp::istype($!min,Str)
-                  # we have a string range
-                  ?? $!min.chars == 1 && $!max.chars == 1
-                    # we have (simple) char range
-                    ?? Rakudo::Iterator.CharFromTo(
-                         $!min,$!max.Str,$!excludes-min,$!excludes-max
-                       )
-                    # generic string sequence
-                    !! SEQUENCE(
-                         ($!excludes-min ?? $!min.succ !! $!min),
-                         $!max,
-                         :exclude_end($!excludes-max)
-                       )
-                  # general case
-                  !! Rakudo::Iterator.SuccFromTo(
-                       $!excludes-min ?? $!min.succ !! $!min,
-                       $!excludes-max,
-                       $!max
-                     )
+        if $!min after $!max {
+            Rakudo::Iterator.Empty       # nothing to iterate over
+        }
+        elsif nqp::istype($!min,Int)
+          && nqp::not_i(nqp::isbig_I(nqp::decont($!min)))
+          && ((nqp::istype($!max,Int)
+               && nqp::not_i(nqp::isbig_I(nqp::decont($!max))))
+               || $!max === Inf
+             ) {
+            Rakudo::Iterator.IntRange(   # can use native ints
+               $!min + $!excludes-min,
+               $!max - $!excludes-max
+            )
+        }
+        elsif $!min === Inf {
+            Rakudo::Iterator.Empty  # doesn't make much sense, but there you go
+        }
+        elsif $!max === Inf {
+            nqp::istype($!min, Numeric)
+              # something quick and easy for 1..* style things
+              ?? NumFromInf.new($!min + $!excludes-min)
+              # open-ended general case
+              !! Rakudo::Iterator.SuccFromInf(
+                   $!excludes-min ?? $!min.succ !! $!min
+                 )
+        }
+        elsif nqp::istype($!min,Str) {
+            $!min.chars == 1 && $!max.chars == 1
+              # we have (simple) char range
+              ?? Rakudo::Iterator.CharFromTo(
+                   $!min,$!max.Str,$!excludes-min,$!excludes-max
+                 )
+              # generic string sequence
+              !! self.generic-string-sequence
+        }
+        else {
+            Rakudo::Iterator.SuccFromTo(
+              $!excludes-min ?? $!min.succ !! $!min,
+              $!excludes-max,
+              $!max
+            )
+        }
     }
 
     multi method list(Range:D:) { List.from-iterator(self.iterator) }
-    multi method flat(Range:D:) { Seq.new(self.iterator) }
+    method flat(Range:) {
+        nqp::isconcrete(self)
+          ?? Seq.new(self.iterator)
+          !! (self,)
+    }
 
     my class NativeIntReverse does PredictiveIterator {
         has int $!i;
