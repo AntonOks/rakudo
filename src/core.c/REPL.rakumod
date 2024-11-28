@@ -1,3 +1,8 @@
+my class X::REPL::InvalidEnvironment is Exception {
+    has $.reason is required;
+    method message() { "Invalid REPL environment: $!reason" }
+}
+
 class REPL { ... }
 
 do {
@@ -40,8 +45,6 @@ do {
     }
 
     my role ReadlineBehavior[$WHO] {
-        my &readline    = $WHO<&readline>;
-        my &add_history = $WHO<&add_history>;
         my $Readline = try { require Readline }
         my $read = $Readline.new;
         if !Rakudo::Internals.IS-WIN {
@@ -315,6 +318,10 @@ do {
         }
 
         method init(Mu \compiler, $multi-line-enabled --> Nil) {
+            if compiler.repl-mode eq 'tty' && not $*IN.t {
+                X::REPL::InvalidEnvironment.new(reason => "Unable to initialize REPL outside of a TTY").throw;
+            }
+
             $!compiler := compiler;
             $!multi-line-enabled = $multi-line-enabled;
             PROCESS::<$SCHEDULER>.uncaught_handler =  -> $exception {
@@ -493,7 +500,10 @@ do {
             self.teardown;
         }
 
-        # Inside of the EVAL it does like caller.ctxsave
+        # This appears to be a magic method that is called somewhere inside
+        # the compiler.  The semantics of $*MAIN_CTX and $*CTXSAVE appear
+        # to be needed to get a persistency with regards to scope between
+        # lines entered in the REPL.
         method ctxsave(--> Nil) {
             $*MAIN_CTX := nqp::ctxcaller(nqp::ctx());
             $*CTXSAVE := 0;
@@ -552,10 +562,6 @@ do {
 sub repl(*%_) {
     my $repl := REPL.new(nqp::getcomp("Raku"), %_, True);
     nqp::bindattr($repl,REPL,'$!save_ctx',nqp::ctxcaller(nqp::ctx));
-
-    # act as is we're already inside rlwrap so that we don't proc out
-    # to another "raku" executable and thus lose all of the environment
-    %*ENV<_> = 'rlwrap';
 
     $repl.repl-loop(:no-exit);
 }

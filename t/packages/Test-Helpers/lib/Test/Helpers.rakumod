@@ -18,17 +18,9 @@ sub is-run (
     Str() $code, $desc = "$code runs",
     Stringy :$in, :@compiler-args, :@args, :$out = '', :$err = '', :$exitcode = 0
 ) is export is test-assertion {
-    my @proc-args = flat do if $*DISTRO.is-win {
-        # $*EXECUTABLE is a batch file on Windows, that goes through cmd.exe
-        # and chokes on standard quoting. We also need to remove any newlines
-        <cmd.exe  /S /C>, $*EXECUTABLE, @compiler-args, '-e',
-        ($code,  @args).subst(:g, "\n", " ")
-    }
-    else {
-        $*EXECUTABLE, @compiler-args, '-e', $code, @args
-    }
+    my @proc-args = $*EXECUTABLE, |@compiler-args, '-e', $code, |@args;
 
-    with run :in, :out, :err, @proc-args {
+    with run :in, :out, :err, |@proc-args {
         $in ~~ Blob ?? .in.write: $in !! .in.print: $in if $in;
         $ = .in.close;
         my $proc-out      = .out.slurp: :close;
@@ -57,7 +49,7 @@ multi sub is-run-repl(
 ) is test-assertion {
     $code .= join: "\n" if $code ~~ Positional|Seq;
     (temp %*ENV)<RAKUDO_ERROR_COLOR  RAKUDO_LINE_EDITOR> = 0, $line-editor;
-    my $proc = run $*EXECUTABLE, '--repl-mode=interactive', :in, :out, :err;
+    my $proc = run $*EXECUTABLE, '--repl-mode=process', :in, :out, :err;
     $proc.in.print: $code;
     $proc.in.close;
 
