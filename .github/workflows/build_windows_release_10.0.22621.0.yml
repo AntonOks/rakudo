@@ -1,5 +1,5 @@
 # Test if Rakudo builds, on each GitHub Windows runner
-name: Build on GitHub Windows runners
+name: Build 10.0.22621.0 on GitHub Windows runners
 on:
   workflow_dispatch:
 env:
