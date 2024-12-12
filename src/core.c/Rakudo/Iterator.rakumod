@@ -3521,7 +3521,11 @@ class Rakudo::Iterator {
         method done() {
             my $value   := $!numerator;
             $!numerator := nqp::null;
-            $value
+            $value || nqp::if(
+              $!iterator.is-lazy,
+              IterationEnd,
+              0
+            )
         }
 
         method pull-one() { ... }
@@ -3544,9 +3548,17 @@ class Rakudo::Iterator {
                   nqp::stmts(                   # an actable mod
                     (my $value := $!numerator mod $mod),
                     nqp::bindattr(self,IntPolymod,'$!numerator',
-                      ($!numerator div $mod) || nqp::null
+                      ($!numerator div $mod)
                     ),
-                    $value
+                    $value || nqp::if(
+                      $!numerator,
+                      0,
+                      nqp::if(
+                        $!iterator.is-lazy,
+                        IterationEnd,
+                        0
+                      )
+                    )
                   ),
                   nqp::if(                      # not an actable mod
                     $mod,
@@ -3579,10 +3591,18 @@ class Rakudo::Iterator {
                     nqp::stmts(                 # an actable mod
                       (my $value     := $!numerator % $mod),
                       (my $numerator := $!numerator - $value),
-                      nqp::bindattr(self,IntPolymod,'$!numerator',
-                        ($numerator / $mod) || nqp::null
+                      nqp::bindattr(self,RealPolymod,'$!numerator',
+                        ($numerator / $mod)
                       ),
-                      $value
+                      $value || nqp::if(
+                        $!numerator,
+                        0,
+                        nqp::if(
+                          $!iterator.is-lazy,
+                          IterationEnd,
+                          0
+                        )
+                      )
                     ),
                     divide-by-zero($!numerator) # kaboom
                   )

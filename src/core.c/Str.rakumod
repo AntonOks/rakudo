@@ -2945,79 +2945,166 @@ my class Str does Stringy { # declared in BOOTSTRAP
         nqp::box_s(nqp::join('',$parts),self)
     }
 
-    multi method trans(Str:D:) { self }
+    # Expand a literal range of characters into an IterationBuffer
+    # according to the (partially un)documented .trans semantics
+    my sub expand-literal-range(str $range) {
+        my Mu $result := nqp::create(IterationBuffer);
+        my int $chars  = nqp::chars($range);
+        my int $start  = 1;
+        my int $found  = nqp::index($range,'..',$start);
 
-    multi method trans(Str:D: Pair:D $what, *%n --> Str:D) {
-        my $from := $what.key;
-        my $to   := $what.value;
+        # Found and not at the end without trailing range spec
+        nqp::while(
+          $found != -1 && $found != $chars - 2,
+          nqp::stmts(
+            nqp::if(
+              (my int $unsplit = $found - $start),
+              nqp::splice(
+                $result,
+                nqp::split("",nqp::substr($range,$start - 1,$unsplit)),
+                nqp::elems($result),
+                0
+              )
+            ),
+
+            # Add the range excluding last (may be begin point next range)
+            (my int $from = nqp::ordat($range,$found - 1) - 1),
+            (my int $to   = nqp::ordat($range,$found + 2)),
+            nqp::while(
+              ++$from < $to,
+              nqp::push($result,nqp::chr($from))
+            ),
+
+            # Look for next range
+            ($found = nqp::index($range,'..',$start = $found + 3))
+          )
+        );
+
+        # Add final bits
+        nqp::splice(
+          $result,
+          nqp::split("",nqp::substr($range,$start - 1)),
+          nqp::elems($result),
+          0
+        ) if $start <= $chars;
+
+        $result
+    }
+
+    multi method trans(Str:D:) {
+        # Remove valid named args
+        %_<c complement d delete s squash>:delete;
+
+        # A noop only if there are no named args left
+        warn "Unexpected named variable(s) '%_.pairs.raku.substr(1,*-5)' specified with .trans, did you mean to specify Pair(s)?".naive-word-wrapper
+          if %_.Bool;
+
+        self
+    }
+
+    multi method trans(Str:D: Pair:D $what --> Str:D) {
+
+        # Nothing to do with type object on either side
+        return self
+          unless (my $from := $what.key).defined
+              && (my $to   := $what.value).defined;
+
         my $slash := nqp::getlexcaller('$/');
         $/ := $slash if nqp::iscont($slash);
 
-        return self.trans(($what,), |%n)
-          if nqp::not_i(nqp::istype($from,Str))  # from not a string
-          || !$from.defined                      # or a type object
-          || nqp::not_i(nqp::istype($to,Str))    # or to not a string
-          || !$to.defined                        # or a type object
-          || %n;                                 # or any named params passed
+        if nqp::istype($to,Str) {
 
-        # from 1 char
-        return nqp::box_s(
-          Rakudo::Internals.TRANSPOSE(self, $from, $to.substr(0,1)),
-          self
-        ) if $from.chars == 1;
+            # Fast path regex to string: ccan be simplified to split/join
+            return self.split($from).join($to)
+              if nqp::istype($from,Regex);
 
-        my str $sfrom  = Rakudo::Internals.EXPAND-LITERAL-RANGE($from,0);
+            # Slow path for none strings or nameds
+            return self.trans(($what,), |%_)
+              if nqp::not_i(nqp::istype($from,Str))
+              || %_.Bool;
+
+            # Fast path single char to single other char
+            return nqp::box_s(
+              Rakudo::Internals.TRANSPOSE(self, $from, $to.substr(0,1)),
+              self
+            ) if $from.chars == 1;
+        }
+
+        # Slow path, the "to" is not a string
+        else {
+            return self.trans(($what,), |%_)
+        }
+
+        my str $sfrom  = nqp::join("",expand-literal-range($from));
         my str $str    = self;
         my str $chars  = nqp::chars($str);
-        my Mu $result := nqp::list_s();
+        my Mu $result := nqp::list_s;
         my str $check;
         my int $i = -1;
 
-        # something to convert to
+        # Something to convert to
         if $to.chars -> $tochars {
             nqp::setelems($result,$chars);
 
-            # all convert to one char
+            # All convert to one char
             if $tochars == 1 {
-                my str $sto = nqp::unbox_s($to);
-
-                while nqp::islt_i(++$i,$chars) {
-                    $check = nqp::substr($str,$i,1);
+                nqp::while(
+                  nqp::islt_i(++$i,$chars),
+                  nqp::stmts(
+                    ($check = nqp::substr($str,$i,1)),
                     nqp::bindpos_s(
-                      $result, $i, nqp::iseq_i(nqp::index($sfrom,$check),-1)
-                        ?? $check
-                        !! $sto
-                    );
-                }
+                      $result,
+                      $i,
+                      nqp::if(
+                        nqp::iseq_i(nqp::index($sfrom,$check),-1),
+                        $check,
+                        $to
+                      )
+                    )
+                  )
+                );
             }
 
-            # multiple chars to convert to
+            # Multiple chars to convert to
             else {
-                my str $sto = Rakudo::Internals.EXPAND-LITERAL-RANGE($to,0);
-                my int $sfl = nqp::chars($sfrom);
+                my $bto := expand-literal-range($to);
                 my int $found;
 
-                # repeat until mapping complete
-                $sto = $sto ~ $sto while nqp::islt_i(nqp::chars($sto),$sfl);
+                # Repeat until mapping complete
+                nqp::while(
+                  nqp::islt_i(nqp::elems($bto),nqp::chars($sfrom)),
+                  nqp::splice($bto, $bto, nqp::elems($bto), 0)
+                );
 
-                while nqp::islt_i(++$i,$chars) {
-                    $check = nqp::substr($str,$i,1);
-                    $found = nqp::index($sfrom,$check);
-                    nqp::bindpos_s($result, $i, nqp::iseq_i($found,-1)
-                      ?? $check
-                      !! nqp::substr($sto,$found,1)
-                    );
-                }
+                nqp::while(
+                  nqp::islt_i(++$i,$chars),
+                  nqp::stmts(
+                    ($check = nqp::substr($str,$i,1)),
+                    ($found = nqp::index($sfrom,$check)),
+                    nqp::bindpos_s(
+                      $result,
+                      $i,
+                      nqp::if(
+                        nqp::iseq_i($found,-1),
+                        $check,
+                        nqp::atpos($bto,$found)
+                      )
+                    )
+                  )
+                );
             }
         }
 
-        # just remove
+        # Just remove
         else {
-            while nqp::islt_i(++$i,$chars) {
-                $check = nqp::substr($str,$i,1);
+            nqp::while(
+              nqp::islt_i(++$i,$chars),
+              ($check = nqp::substr($str,$i,1)),
+              nqp::if(
+                nqp::iseq_i(nqp::index($sfrom,$check),-1),
                 nqp::push_s($result, $check)
-                  if nqp::iseq_i(nqp::index($sfrom,$check),-1);
-            }
+              )
+            );
         }
 
         nqp::box_s(nqp::join('',$result),self);
@@ -3195,8 +3282,18 @@ my class Str does Stringy { # declared in BOOTSTRAP
             nqp::box_s(nqp::join('', $result),$!what)
         }
     }
+
+    multi method trans(Str:D: *@changes) {
+        my $slash := nqp::getlexcaller('$/');
+        $/ := $slash if nqp::iscont($slash);
+        self.trans(@changes, |%_)
+    }
     multi method trans(Str:D:
-      *@changes, :c(:$complement), :s(:$squash), :d(:$delete) --> Str:D) {
+      @changes,
+      Bool() :c(:$complement),
+      Bool() :s(:$squash),
+      Bool() :d(:$delete)
+    --> Str:D) {
 
         # nothing to do
         return self unless self.chars;
@@ -3215,18 +3312,16 @@ my class Str does Stringy { # declared in BOOTSTRAP
         my sub expand($s) {
             nqp::istype($s,Iterable) || nqp::istype($s,Positional)
               ?? (my @ = myflat($s.list).Slip)
-              !! Rakudo::Internals.EXPAND-LITERAL-RANGE($s,1)
+              !! expand-literal-range($s.Str).Slip
         }
 
-        my int $just-strings = !$complement && !$squash;
+        my int $just-strings = !($complement || $squash);
         my int $just-chars   = $just-strings;
         my $needles := nqp::list;
         my $pins    := nqp::list;
 
         my $substitutions := nqp::list;
         for @changes -> $p {
-            X::Str::Trans::InvalidArg.new(got => $p).throw
-              unless nqp::istype($p,Pair);
 
             my $key   := $p.key;
             my $value := $p.value;
@@ -3241,8 +3336,8 @@ my class Str does Stringy { # declared in BOOTSTRAP
             else {
                 my $from := nqp::getattr(expand($key),  List,'$!reified');
                 my $to   := nqp::getattr(expand($value),List,'$!reified');
-                my $from-elems = nqp::elems($from);
-                my $to-elems   = nqp::elems($to);
+                my int $from-elems = nqp::elems($from);
+                my int $to-elems   = nqp::elems($to);
                 my $padding = $delete
                   ?? ''
                   !! $to-elems
@@ -3250,9 +3345,9 @@ my class Str does Stringy { # declared in BOOTSTRAP
                     !! '';
 
                 my int $i = -1;
-                while nqp::islt_i($i = $i + 1,$from-elems) {
+                while ++$i < $from-elems {
                     my $key   := nqp::atpos($from,$i);
-                    my $value := nqp::islt_i($i,$to-elems)
+                    my $value := $i < $to-elems
                       ?? nqp::atpos($to,$i)
                       !! $padding;
                     nqp::push($substitutions,Pair.new($key,$value));
@@ -3514,10 +3609,12 @@ my class Str does Stringy { # declared in BOOTSTRAP
             !! $range.max.Int - $range.excludes-max - $start + 1
         )
     }
-    multi method substr-rw(Str:D $container is rw: Callable:D $code) is rw {
+    multi method substr-rw(Str:D $container is rw:
+      Callable:D $code, $want?
+    ) is rw {
         my int $chars = self.chars;
         my int $start = $code($chars);
-        self!substr-proxify($container, $start, $chars - $start)
+        self!substr-proxify($container, $start, $want // $chars - $start)
     }
     multi method substr-rw(Str:D $container is rw: Int(Any) $start) is rw {
         self!substr-proxify($container, $start, self.chars - $start)
