@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
 env:
   VSCMD_DEBUG: 3
-  VERSION: 2024.09
+  VERSION: 2024.12
   REVISION: 01
-  RELEASE_URL: https://rakudo.org/dl/rakudo/rakudo-2024.09.tar.gz
+  RELEASE_URL: https://rakudo.org/dl/rakudo/rakudo-2024.12.tar.gz
 jobs:
   build:
     strategy:
