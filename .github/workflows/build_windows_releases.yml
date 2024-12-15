@@ -11,7 +11,7 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 7 # run 7 of 14 jobs in parallel
+      # max-parallel: 7 # run 7 of 14 jobs in parallel
       matrix:
         os: [windows-2019, windows-2022]
         # see https://github.com/actions/runner-images/blob/main/images/windows/Windows2019-Readme.md#installed-windows-sdks and
