@@ -2,7 +2,7 @@ my class X::Delete { ... }
 my class X::MustBeParametric { ... }
 my class X::TooManyDimensions { ... }
 
-my class array does Iterable does Positional {
+my class array is Cool does Iterable does Positional {
 
     multi method new(array:)      { self!create }
     multi method new(array: @v)   { self!create.STORE(@v) }
@@ -720,7 +720,7 @@ my class array does Iterable does Positional {
 
             nqp::join($delim.Str,self)
         }
-        method raku(strarray:D: --> Str:D) {
+        multi method raku(strarray:D: --> Str:D) is default {
             my $parts := nqp::list_s;
             my int $i  = -1;
 
