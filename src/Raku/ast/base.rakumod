@@ -156,6 +156,12 @@ class RakuAST::Node {
     # Drive CHECK-time activities on this node and its children. Assumes that BEGIN time and
     # parse time has already completely happened.
     method IMPL-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context, Bool $resolve-only) {
+        unless $resolve-only {
+            if nqp::istype(self, RakuAST::SinkBoundary) && !self.sink-calculated {
+                self.calculate-sink();
+            }
+        }
+
         # Visit children and do their CHECK time.
         my int $is-scope := nqp::istype(self, RakuAST::LexicalScope);
         my int $is-package := nqp::istype(self, RakuAST::Package);
@@ -168,17 +174,17 @@ class RakuAST::Node {
         # Unless in resolve-only mode, do other check-time activities.
         # TODO eliminate resolve-only, since that's just check time.
         unless $resolve-only {
-            if nqp::istype(self, RakuAST::SinkBoundary) && !self.sink-calculated {
-                self.calculate-sink();
-            }
             if nqp::istype(self, RakuAST::CheckTime) {
-                self.clear-check-time-problems();
                 self.PERFORM-CHECK($resolver, $context);
                 if self.has-check-time-problems {
-                    $resolver.add-node-with-check-time-problems(self);
                     if $resolver.find-scope-property(-> $scope { $scope.fatal }) {
                         self.promote-worries-to-sorries;
                     }
+                    my $worries := $resolver.find-scope-property(-> $scope { $scope.tell-worries });
+                    if nqp::isconcrete($worries) && !$worries {
+                        self.clear-worries;
+                    }
+                    $resolver.add-node-with-check-time-problems(self) if self.has-check-time-problems;
                 }
             }
             if nqp::istype(self, RakuAST::Lookup) && !self.is-resolved && self.needs-resolution {
@@ -187,6 +193,50 @@ class RakuAST::Node {
         }
 
         Nil
+    }
+
+    method IMPL-CALCULATE-SINK() {
+        if nqp::istype(self, RakuAST::SinkBoundary) && !self.sink-calculated {
+            self.calculate-sink();
+        }
+
+        self.visit-children(-> $child { $child.IMPL-CALCULATE-SINK() });
+
+        Nil
+    }
+
+    method IMPL-QAST-NESTED-BLOCK-DECLS(RakuAST::IMPL::QASTContext $context) {
+        my $stmts := QAST::Stmts.new;
+        my @code-todo := [self];
+        while @code-todo {
+            my $visit := @code-todo.shift;
+            $visit.visit-children: -> $node {
+                if nqp::istype($node, RakuAST::Code) {
+                    if nqp::istype($visit, RakuAST::IMPL::ImmediateBlockUser) &&
+                            $visit.IMPL-IMMEDIATELY-USES($node) {
+                    }
+                    else {
+                        my $code := $node.IMPL-QAST-DECL-CODE($context);
+                        $stmts.push($code);
+                    }
+                }
+                if nqp::istype($node, RakuAST::Expression) {
+                    $node.IMPL-QAST-ADD-THUNK-DECL-CODE($context, $stmts);
+                }
+
+                if nqp::istype($node, RakuAST::LexicalScope) {
+                    if nqp::istype($node, RakuAST::TraitTarget) {
+                        $node.visit-traits(-> $trait { @code-todo.push($trait) });
+                    }
+                }
+                elsif nqp::istype($node, RakuAST::MayCreateBlock) && $node.creates-block {
+                }
+                else {
+                    @code-todo.push($node);
+                }
+            }
+        }
+        $stmts
     }
 
     # Recursively walks the tree finding nodes of the specified type that are
@@ -307,10 +357,16 @@ class RakuAST::Node {
             $list
         }
         elsif nqp::istype($list, List) {
-            my $reified := nqp::getattr($list, List, '$!reified');
-            nqp::isconcrete($reified)
-                ?? $reified
-                !! $list.FLATTENABLE_LIST
+            my $todo := nqp::getattr($list, List, '$!todo');
+            if nqp::isconcrete($todo) {
+                $todo.reify-all;
+                nqp::getattr($list, List, '$!reified')
+            }
+            else {
+                nqp::isconcrete(nqp::getattr($list, List, '$!reified'))
+                    ?? nqp::getattr($list, List, '$!reified')
+                    !! nqp::bindattr($list, List, '$!reified', nqp::create(IterationBuffer));
+            }
         }
         else {
             nqp::list($list)
@@ -530,6 +586,11 @@ class RakuAST::Node {
         }
         $qast
     }
+
+    # If has-compile-time-value is True, the node must also have a maybe-compile-time-value method.
+    method has-compile-time-value() {
+        False
+    }
 }
 
 # Anything with a known compile time value does RakuAST::CompileTimeValue.
@@ -538,5 +599,19 @@ class RakuAST::CompileTimeValue
 {
     method compile-time-value() {
         nqp::die('compile-time-value not implemented for ' ~ self.HOW.name(self))
+    }
+
+    method has-compile-time-value() {
+        True
+    }
+
+    method maybe-compile-time-value() {
+        self.compile-time-value
+    }
+}
+
+class RakuAST::MayCreateBlock {
+    method creates-block {
+        False
     }
 }

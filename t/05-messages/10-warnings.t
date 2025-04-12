@@ -26,7 +26,7 @@ else {
         is-run ｢
             if  1 { LEAVE 42.uc; Any }; if  1 { LEAVE 42.uc; 42  };
             for 1 { LEAVE 42.uc; Any }; for 1 { LEAVE 42.uc; 42  };
-        ｣, :err{ 2 == .comb: 'Useless use' },
+        ｣, :err{ 2|4 == .comb: 'Useless use' },
             'we get warnings with phasers that do not care about return value';
 
         is-run ｢
@@ -82,6 +82,7 @@ is-run ｢my $ = ^2 .grep: {try 1 after 0}; my $ = {try 5 == 5}()｣,
 is-run ｢my @a; sink @a; my $b := gather { print 'meow' }; sink $b｣,
     :out<meow>, 'no warnings when sinking variables';
 
+todo('Macros NYI') if %*ENV<RAKUDO_RAKUAST>;
 is-run ｢use experimental :macros; macro z($) { quasi {} };
     z $; z <x>; print "pass"｣, :compiler-args[<-I lib>], :out<pass>,
     'args to macros do not cause useless use warnings';

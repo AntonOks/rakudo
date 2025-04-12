@@ -16,6 +16,8 @@ class RakuAST::Regex
         # Store its captures and NFA.
         $code-object.SET_CAPS(QRegex::P6Regex::Actions.capnames($regex-qast, 0));
         # TODO top-level NFA if applicable (e.g. if named rule)
+        QRegex::P6Regex::Actions.store_regex_caps($code-object, NQPMu, QRegex::P6Regex::Actions.capnames($regex-qast, 0));
+        QRegex::P6Regex::Actions.store_regex_nfa($code-object, NQPMu, QRegex::NFA.new.addnode($regex-qast));
         QRegex::P6Regex::Actions.alt_nfas($code-object, $regex-qast, $context.sc-handle);
 
         # Wrap in scan/pass as appropriate.
@@ -187,26 +189,43 @@ class RakuAST::Regex::Sequence
     }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
-        my $concat := QAST::Regex.new(:rxtype<concat>);
         my str $collect-literals := '';
+        my @terms;
         for $!terms {
             if nqp::istype($_, RakuAST::Regex::Literal) {
                 $collect-literals := $collect-literals ~ $_.text;
             }
             else {
                 if $collect-literals ne '' {
-                    $concat.push(self.IMPL-LIT($collect-literals, %mods));
+                    @terms.push(self.IMPL-LIT($collect-literals, %mods));
                     $collect-literals := '';
                 }
                 my $qast := $_.IMPL-REGEX-QAST($context, %mods);
                 if $qast {
                     $qast.backtrack('r') if %mods<r> && !$qast.backtrack;
-                    $concat.push($qast);
+                    @terms.push($qast);
                 }
             }
         }
         if $collect-literals ne '' {
-            $concat.push(self.IMPL-LIT($collect-literals, %mods));
+            @terms.push(self.IMPL-LIT($collect-literals, %mods));
+        }
+
+        # One more round of literal collection after we generated QAST as
+        # not only RakuAST::Regex::Literal nodes can create literals
+        my $concat := QAST::Regex.new(:rxtype<concat>);
+        my $last-term;
+        for @terms {
+            if nqp::istype($_, QAST::Regex) && $_.rxtype eq 'literal' && !nqp::istype($_[0], QAST::Node)
+                && $last-term && nqp::istype($last-term, QAST::Regex) && $last-term.rxtype eq 'literal' && !nqp::istype($last-term[0], QAST::Node)
+                && $_.subtype eq $last-term.subtype
+            {
+                $last-term[0] := $last-term[0] ~ $_[0];
+            }
+            else {
+                $last-term := $_;
+                $concat.push($_);
+            }
         }
         $concat
     }
@@ -376,6 +395,7 @@ class RakuAST::Regex::Nested
 class RakuAST::Regex::CapturingGroup
   is RakuAST::Regex::Atom
   is RakuAST::RegexThunk
+  is RakuAST::ImplicitDeclarations
 {
     has RakuAST::Regex $.regex;
 
@@ -389,13 +409,10 @@ class RakuAST::Regex::CapturingGroup
         $obj
     }
 
-    method IMPL-UNIQUE-NAME() {
-        my str $unique-name := $!unique-name;
-        unless $unique-name {
-            nqp::bindattr_s(self, RakuAST::Regex::CapturingGroup, '$!unique-name',
-                ($unique-name := QAST::Node.unique('!__REGEX_CAPTURE_')));
-        }
-        $unique-name
+    method PRODUCE-IMPLICIT-DECLARATIONS() {
+        self.IMPL-WRAP-LIST([
+            RakuAST::VarDeclaration::Implicit::RegexCapture.new,
+        ])
     }
 
     method IMPL-THUNKED-REGEX-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -409,26 +426,21 @@ class RakuAST::Regex::CapturingGroup
         # in the lexpad; we'll look it up when we need it. This means we can
         # avoid closure-cloning it per time we enter it, for example if it is
         # quantified.
-        my str $name := self.IMPL-UNIQUE-NAME;
         my $block := self.IMPL-QAST-FORM-BLOCK($context, :blocktype('declaration_static'));
         self.IMPL-LINK-META-OBJECT($context, $block);
         QAST::Stmts.new(
             $block,
-            QAST::Op.new(
-                :op('bind'),
-                QAST::Var.new( :decl<var>, :scope<lexical>, :$name ),
-                self.IMPL-CLOSURE-QAST($context)
-            )
+            self.get-implicit-declarations().AT-POS(0).IMPL-BIND-QAST($context,
+                self.IMPL-CLOSURE-QAST($context) ),
         )
     }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
-        my str $name := self.IMPL-UNIQUE-NAME;
         my $body-qast := $!regex.IMPL-REGEX-QAST($context, nqp::clone(%mods));
         nqp::bindattr(self, RakuAST::Regex::CapturingGroup, '$!body-qast', $body-qast);
         QAST::Regex.new(
             :rxtype('subrule'), :subtype('capture'),
-            QAST::NodeList.new(QAST::Var.new( :$name, :scope('lexical') )),
+            QAST::NodeList.new(self.get-implicit-declarations().AT-POS(0).IMPL-LOOKUP-QAST($context)),
             $body-qast
         )
     }
@@ -611,6 +623,8 @@ class RakuAST::Regex::CharClass::Negatable
 class RakuAST::Regex::CharClassEnumerationElement
   is RakuAST::Node
 {
+    method codepoint() { Nil }
+
     method IMPL-CCLASS-ENUM-CHARS(%mods) { '' }
 
     method IMPL-CCLASS-ENUM-QAST(RakuAST::IMPL::QASTContext $context, %mods, Bool $negate) {
@@ -812,25 +826,19 @@ class RakuAST::Regex::CharClass::Word
 class RakuAST::Regex::CharClass::Specified
   is RakuAST::Regex::CharClass::Negatable
   is RakuAST::Regex::CharClassEnumerationElement
-  is RakuAST::CheckTime
 {
     has str $.characters;
+    has Int $.codepoint;
 
-    method new(Bool :$negated, str :$characters!) {
+    method new(Bool :$negated, str :$characters!, Int :$codepoint) {
         my $obj := nqp::create(self);
         nqp::bindattr($obj, RakuAST::Regex::CharClass::Negatable, '$!negated',
             $negated ?? True !! False);
         nqp::bindattr_s($obj, RakuAST::Regex::CharClass::Specified, '$!characters',
             $characters);
+        nqp::bindattr($obj, RakuAST::Regex::CharClass::Specified, '$!codepoint',
+            $codepoint);
         $obj
-    }
-
-    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
-        if nqp::chars($!characters) > 1 {
-            self.add-sorry:
-              $resolver.build-exception: 'X::NotSingleGrapheme',
-                characters => $!characters;
-        }
     }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
@@ -949,6 +957,7 @@ class RakuAST::Regex::Statement
 # A block of code embedded in a regex, executed only for its side-effects.
 class RakuAST::Regex::Block
   is RakuAST::Regex::Atom
+  is RakuAST::CheckTime
 {
     has RakuAST::Block $.block;
 
@@ -959,6 +968,17 @@ class RakuAST::Regex::Block
     }
 
     method quantifiable() { False }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        $!block.body.statement-list.visit-children(-> $statement {
+            if nqp::istype($statement, RakuAST::Statement::Expression) {
+                if nqp::istype($statement.expression, RakuAST::Var::Attribute) {
+                    self.add-sorry:
+                      $resolver.build-exception: 'X::Attribute::Regex', :symbol($statement.expression.name);
+                }
+            }
+        });
+    }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
         my $block-call := self.IMPL-REGEX-BLOCK-CALL($context, $!block);
@@ -975,6 +995,7 @@ class RakuAST::Regex::Block
 # thus it can be constructed with any expression.
 class RakuAST::Regex::Interpolation
   is RakuAST::Regex::Atom
+  is RakuAST::CheckTime
   is RakuAST::ImplicitLookups
 {
     has RakuAST::Expression $.var;
@@ -994,11 +1015,22 @@ class RakuAST::Regex::Interpolation
         ])
     }
 
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        if nqp::istype($!var, RakuAST::Var::Attribute) {
+            self.add-sorry:
+              $resolver.build-exception: 'X::Attribute::Regex', :symbol($!var.name);
+        }
+    }
+
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
         # Look for fast paths.
         if nqp::istype($!var, RakuAST::Lookup) && $!var.is-resolved {
             my $resolution := $!var.resolution;
-            # TODO contant case
+            if nqp::istype($resolution, RakuAST::VarDeclaration::Constant) {
+                return self.IMPL-APPLY-LITERAL-MODS:
+                    QAST::Regex.new( :rxtype<literal>, nqp::unbox_s($resolution.compile-time-value) ),
+                    %mods
+            }
             if !%mods<m> && nqp::istype($resolution, RakuAST::VarDeclaration::Simple) &&
                     $resolution.sigil eq '$' {
                 my $type := $resolution.type;
@@ -1040,6 +1072,8 @@ class RakuAST::Regex::Interpolation
 class RakuAST::Regex::Assertion
   is RakuAST::Regex::Atom
 {
+    has int $!allow-eval;
+
     method IMPL-INTERPOLATE-ASSERTION(RakuAST::IMPL::QASTContext $context, %mods,
             Mu $expression-qast, Bool $sequential, Mu $PseudoStash) {
         QAST::Regex.new:
@@ -1048,7 +1082,7 @@ class RakuAST::Regex::Assertion
                 QAST::SVal.new( :value('INTERPOLATE_ASSERTION') ),
                 $expression-qast,
                 QAST::IVal.new( :value((%mods<i> ?? 1 !! 0) + (%mods<m> ?? 2 !! 0)) ),
-                QAST::IVal.new( :value(0) ), # XXX 1 if MONKEY-SEE-NO-EVAL
+                QAST::IVal.new( :value($!allow-eval) ),
                 QAST::IVal.new( :value($sequential ?? 1 !! 0) ),
                 QAST::IVal.new( :value(1) ),
                 QAST::Op.new(
@@ -1115,9 +1149,20 @@ class RakuAST::Regex::Assertion::Named
     method PRODUCE-IMPLICIT-LOOKUPS() {
         # A call like <foo> will look for <&foo> and only then do <.foo>
         # (but in both cases it captures).
-        self.IMPL-WRAP-LIST: $!capturing && $!name.is-identifier
-            ?? [RakuAST::Var::Lexical.new('&' ~ $!name.canonicalize)]
-            !! []
+        if $!capturing && $!name.is-identifier {
+            self.IMPL-WRAP-LIST: [RakuAST::Var::Lexical.new('&' ~ $!name.canonicalize)]
+        }
+        else {
+            if $!name.is-identifier || $!name.is-indirect-lookup && !$!name.is-multi-part {
+                self.IMPL-WRAP-LIST: []
+            }
+            else {
+                my @parts := $!name.IMPL-UNWRAP-LIST($!name.parts);
+                my @package-parts := nqp::slice(@parts, 0, nqp::elems(@parts) - 2);
+                my $package-name := RakuAST::Name.new(|@package-parts);
+                self.IMPL-WRAP-LIST: [RakuAST::Type::Simple.new($package-name)]
+            }
+        }
     }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
@@ -1129,7 +1174,7 @@ class RakuAST::Regex::Assertion::Named
         if $longname.is-identifier {
             my $name := $longname.canonicalize;
             if $name eq 'sym' {
-                nqp::die('special <sym> name not yet compiled');
+                nqp::die('Can only use <sym> token in a proto regex');
             }
             else {
                 my $lookups := self.get-implicit-lookups;
@@ -1138,10 +1183,10 @@ class RakuAST::Regex::Assertion::Named
                     && nqp::istype((my $resolution := $lookup.resolution), RakuAST::CompileTimeValue)
                     && nqp::istype($resolution.compile-time-value, Regex)
                 {
+                    my $var-qast := $lookups.AT-POS(0).IMPL-TO-QAST($context);
+                    $var-qast.annotate('coderef', $resolution.compile-time-value);
                     $qast := QAST::Regex.new: :rxtype<subrule>,:subtype<method>,
-                        QAST::NodeList.new:
-                            QAST::SVal.new( :value('CALL_SUBRULE') ),
-                            $lookups.AT-POS(0).IMPL-TO-QAST($context);
+                        QAST::NodeList.new: $var-qast;
                 }
                 else {
                     $qast := QAST::Regex.new: :rxtype<subrule>,
@@ -1154,8 +1199,32 @@ class RakuAST::Regex::Assertion::Named
                 $qast
             }
         }
+        elsif $longname.is-indirect-lookup && !$longname.is-multi-part {
+            QAST::Regex.new: :rxtype<subrule>, :subtype<method>,
+                QAST::NodeList.new:
+                    QAST::SVal.new( :value('INDMETHOD') ),
+                    $longname.indirect-lookup-part().IMPL-QAST-INDIRECT-LOOKUP-PART($context, Mu, 0)
+        }
         else {
-            nqp::die('non-identifier rule calls not yet compiled');
+            my @parts := $!name.IMPL-UNWRAP-LIST($!name.parts);
+            my @pairs := $!name.IMPL-UNWRAP-LIST($!name.colonpairs);
+            my $sub := @parts[nqp::elems(@parts) - 1];
+            my $sub-name := RakuAST::Name.new($sub);
+            $sub-name.set-colonpairs(@pairs);
+
+            my $lookups := self.get-implicit-lookups;
+            my $package := $lookups.AT-POS(0).meta-object;
+            $context.ensure-sc($package);
+            my $qast := QAST::Regex.new: :rxtype<subrule>,:subtype<method>,
+                QAST::NodeList.new:
+                    QAST::SVal.new( :value('OTHERGRAMMAR') ),
+                    QAST::WVal.new( :value($package) ),
+                    QAST::SVal.new( :value($sub-name.canonicalize) ) ;
+            if $!capturing {
+                $qast.subtype('capture');
+                $qast.name($!name.canonicalize);
+            }
+            $qast
         }
     }
 
@@ -1246,11 +1315,48 @@ class RakuAST::Regex::Assertion::Named::RegexArg
     }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
-        nqp::bindattr(self, RakuAST::Regex::Assertion::Named::RegexArg, '$!body-qast',
-            $!regex-arg.IMPL-REGEX-QAST($context, %mods));
+        my $body-qast := $!regex-arg.IMPL-REGEX-QAST($context, %mods);
+        $body-qast := self.IMPL-FLIP-QAST($body-qast) if self.name.canonicalize eq 'after';
+        nqp::bindattr(self, RakuAST::Regex::Assertion::Named::RegexArg, '$!body-qast', $body-qast);
         my $qast := self.IMPL-REGEX-QAST-CALL($context);
         my str $name := self.IMPL-UNIQUE-NAME;
         $qast[0].push(QAST::Var.new( :$name, :scope('lexical') ));
+        $qast
+    }
+
+    method IMPL-FLIP-QAST($qast) {
+        return $qast unless nqp::istype($qast, QAST::Regex);
+        if $qast.rxtype eq 'literal' {
+            $qast[0] := nqp::flip($qast[0]);
+        }
+        elsif $qast.rxtype eq 'concat' {
+            my @tmp;
+            while nqp::elems(@($qast)) { @tmp.push(@($qast).shift) }
+            while @tmp { @($qast).push(self.IMPL-FLIP-QAST(@tmp.pop)) }
+        }
+        elsif $qast.rxtype eq 'anchor' {
+            if $qast.subtype eq 'rwb' {
+                $qast.subtype("lwb");
+            }
+            elsif $qast.subtype eq 'lwb' {
+                $qast.subtype("rwb");
+            }
+            elsif $qast.subtype eq 'bol' {
+                $qast.subtype("eol");
+            }
+            elsif $qast.subtype eq 'eol' {
+                $qast.subtype("bol");
+            }
+            elsif $qast.subtype eq 'bos' {
+                $qast.subtype("eos");
+            }
+            elsif $qast.subtype eq 'eos' {
+                $qast.subtype("bos");
+            }
+        }
+        else {
+            for @($qast) { self.IMPL-FLIP-QAST($_) }
+        }
         $qast
     }
 
@@ -1329,11 +1435,12 @@ class RakuAST::Regex::Assertion::InterpolatedBlock
     has RakuAST::Block $.block;
     has Bool $.sequential;
 
-    method new(RakuAST::Block :$block!, Bool :$sequential) {
+    method new(RakuAST::Block :$block!, Bool :$sequential, Bool :$allow-eval) {
         my $obj := nqp::create(self);
         nqp::bindattr($obj, RakuAST::Regex::Assertion::InterpolatedBlock, '$!block', $block);
         nqp::bindattr($obj, RakuAST::Regex::Assertion::InterpolatedBlock, '$!sequential',
             $sequential ?? True !! False);
+        nqp::bindattr_i($obj, RakuAST::Regex::Assertion, '$!allow-eval', $allow-eval ?? 1 !! 0);
         $obj
     }
 
@@ -1362,16 +1469,18 @@ class RakuAST::Regex::Assertion::InterpolatedBlock
 # treating it as code to be evaluated.
 class RakuAST::Regex::Assertion::InterpolatedVar
   is RakuAST::Regex::Assertion
+  is RakuAST::CheckTime
   is RakuAST::ImplicitLookups
 {
     has RakuAST::Expression $.var;
     has Bool $.sequential;
 
-    method new(RakuAST::Expression :$var!, Bool :$sequential) {
+    method new(RakuAST::Expression :$var!, Bool :$sequential, Bool :$allow-eval) {
         my $obj := nqp::create(self);
         nqp::bindattr($obj, RakuAST::Regex::Assertion::InterpolatedVar, '$!var', $var);
         nqp::bindattr($obj, RakuAST::Regex::Assertion::InterpolatedVar, '$!sequential',
             $sequential ?? True !! False);
+        nqp::bindattr_i($obj, RakuAST::Regex::Assertion, '$!allow-eval', $allow-eval ?? 1 !! 0);
         $obj
     }
 
@@ -1379,6 +1488,13 @@ class RakuAST::Regex::Assertion::InterpolatedVar
         self.IMPL-WRAP-LIST([
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('PseudoStash')),
         ])
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        if nqp::istype($!var, RakuAST::Var::Attribute) {
+            self.add-sorry:
+              $resolver.build-exception: 'X::Attribute::Regex', :symbol($!var.name);
+        }
     }
 
     method IMPL-REGEX-QAST(RakuAST::IMPL::QASTContext $context, %mods) {
@@ -1847,14 +1963,17 @@ class RakuAST::Regex::QuantifiedAtom
         my $atom := $!atom.IMPL-REGEX-QAST($context, %mods);
         my $quantified := $!quantifier.IMPL-QAST-QUANTIFY($context, $atom, %mods);
         if $!separator {
-            $quantified.push($!separator.IMPL-REGEX-QAST($context, %mods));
+            my $separator-qast := $!separator.IMPL-REGEX-QAST($context, %mods);
+            $quantified.push($separator-qast);
             if $!trailing-separator {
                 QAST::Regex.new(
                     :rxtype<concat>,
                     $quantified,
                     QAST::Regex.new(
                         :rxtype<quant>, :min(0), :max(1),
-                        $!separator.IMPL-REGEX-QAST($context, %mods)
+                        #NOTE this has to be the same QAST object as pushed into quantified, so
+                        # it'll get the same capture group assigned.
+                        $separator-qast,
                     )
                 )
             }
@@ -1929,6 +2048,7 @@ class RakuAST::Regex::Quantifier::OneOrMore
 
 # The literal range (** 1..5) quantifier.
 class RakuAST::Regex::Quantifier::Range
+  is RakuAST::CheckTime
   is RakuAST::Regex::Quantifier
 {
     has Int $.min;
@@ -1952,11 +2072,18 @@ class RakuAST::Regex::Quantifier::Range
         $obj
     }
 
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        if nqp::defined($!max) && ($!max - ($!excludes-max ?? 1 !! 0)) < ($!min // 0 + ($!excludes-min ?? 1 !! 0)) {
+            self.add-sorry:
+                $resolver.build-exception: 'X::Syntax::Regex::QuantifierValue', :empty-range;
+        }
+    }
+
     method IMPL-QAST-QUANTIFY(RakuAST::IMPL::QASTContext $context, Mu $atom-qast, %mods) {
         my int $min := $!min // 0;
         $min++ if $!excludes-min;
         my int $max := -1;
-        if $!max {
+        if nqp::defined($!max) {
             $max := $!max;
             $max-- if $!excludes-max;
         }
@@ -1997,7 +2124,7 @@ class RakuAST::Regex::Quantifier::BlockRange
     }
 
     method visit-children(Code $visitor) {
-        $visitor(self.backtrack);
+        $visitor(self.backtrack) if self.backtrack;
         $visitor($!block);
     }
 }

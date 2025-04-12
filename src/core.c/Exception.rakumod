@@ -335,6 +335,10 @@ my class X::Method::NotFound is Exception {
             }
         }
 
+        if $.method eq '!cursor_start' {
+            @!tips.push: "Did you try to call a token / rule / regex directly?"
+        }
+
         if $indirect-method && !$.private && $private_suggested {
             @!tips.push: "Method name starts with '!', did you mean 'self!\"$indirect-method\"()'?";
         }
@@ -2971,7 +2975,7 @@ my class X::Syntax::Number::LiteralType is X::TypeCheck::Assignment does X::Synt
           ?? $!value.Str
           !! $!value.raku;
         my $val = "Cannot assign a literal of type $.valuetype ($value) to
-        a { "native" if $.native } variable of type $vartype. You can declare
+        a { "native" if $.native } variable ($.varname) of type $vartype. You can declare
         the variable to be of type $.suggestiontype, or try to coerce the
         value with $value.$conversionmethod or $conversionmethod\($value\)";
         try $val ~= ", or just write the value as " ~ $!value."$vartype"().raku;
@@ -3345,6 +3349,15 @@ my class X::Multi::NoMatch is Exception {
     has $.capture;
     method message {
         my @cand = $.dispatcher.dispatchees.map(*.signature.gist);
+
+        if $!dispatcher.can('REQUIRED-REVISION') && $!dispatcher.REQUIRED-REVISION {
+            @cand = @cand Z~ $!dispatcher.dispatchees.map({
+                $^c.can('REQUIRED-REVISION')
+                        ?? Q:c[ is revision-gated("6.{nqp::chr(nqp::ord('c') + ($c.REQUIRED-REVISION - 1))}")]
+                        !! ""
+            })
+        }
+
         my @un-rw-cand;
         if first / 'is rw' /, @cand {
             my $rw-capture = Capture.new(

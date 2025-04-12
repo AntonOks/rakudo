@@ -206,6 +206,10 @@ do {
         has $!need-more-input = {};
         has $!control-not-allowed = {};
 
+        # The grammar / actions to use
+        has $!grammar;
+        has $!actions;
+
         sub do-mixin($self, Str $module-name, $behavior, :@extra-modules,
                      Str :$fallback, Bool :$classlike) {
             my Bool $problem = False;
@@ -323,6 +327,8 @@ do {
             }
 
             $!compiler := compiler;
+            $!grammar  := nqp::null;
+            $!actions  := nqp::null;
             $!multi-line-enabled = $multi-line-enabled;
             PROCESS::<$SCHEDULER>.uncaught_handler =  -> $exception {
                 note "Uncaught exception on thread $*THREAD.id():\n" ~
@@ -386,6 +392,18 @@ do {
                     .throw;
                 }
 
+                when X::AdHoc {
+                    my str $message = .message;
+                    if $message eq 'Premature heredoc consumption'
+                      || $message.starts-with('Ending delimiter ')
+                      || $message.starts-with("Couldn't find terminator")
+                      || $message.contains("is immediately followed by a combining codepoint") {
+                        return $!need-more-input
+                          if $!multi-line-enabled;
+                    }
+                    .throw
+                }
+
                 when X::ControlFlow::Return {
                     return $!control-not-allowed;
                 }
@@ -402,10 +420,21 @@ do {
                 return $!control-not-allowed;
             }
 
-            self.compiler.eval(
+            my $*GRAMMAR;
+            %adverbs<grammar> := $!grammar unless nqp::isnull($!grammar);
+            %adverbs<actions> := $!actions unless nqp::isnull($!actions);
+            my $result := self.compiler.eval(
               $code.subst(/ '$*' \d+ /, { '@*_[' ~ $/.substr(2) ~ ']' }, :g),
               |%adverbs
-            )
+            );
+
+            # Grammar was changed, make sure we use changed one from now on
+            if $*GRAMMAR -> $grammar {
+                $!grammar := $grammar;
+                $!actions := $grammar.actions;
+            }
+
+            $result
         }
 
         method interactive_prompt($index) { "[$index] > " }

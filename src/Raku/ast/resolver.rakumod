@@ -35,6 +35,14 @@ class RakuAST::Resolver {
         $clone
     }
 
+    method IMPL-CLONE-ATTACH-TARGETS() {
+        my %attach-targets;
+        for $!attach-targets {
+            %attach-targets{$_.key} := nqp::clone($_.value);
+        }
+        %attach-targets
+    }
+
     # Push an attachment target, so children can attach to it.
     method push-attach-target(RakuAST::AttachTarget $target) {
         for $target.IMPL-UNWRAP-LIST($target.attach-target-names()) -> str $name {
@@ -63,10 +71,10 @@ class RakuAST::Resolver {
     # Find the current (most recently pushed) attachment target with the
     # specified name, or return Nil if there is no target by the given name,
     # or no targets left for the given name.
-    method find-attach-target(str $name) {
+    method find-attach-target(str $name, Bool :$skip-first) {
         my @stack := $!attach-targets{$name};
-        nqp::isconcrete(@stack) && nqp::elems(@stack)
-          ?? @stack[nqp::elems(@stack) - 1]
+        nqp::isconcrete(@stack) && nqp::elems(@stack) > +$skip-first
+          ?? @stack[nqp::elems(@stack) - (1 + $skip-first)]
           !! Nil
     }
 
@@ -165,7 +173,7 @@ class RakuAST::Resolver {
             $name  := $sigil ~ $name if $sigil;
             $found := self.resolve-lexical($name)
         }
-        else {
+        elsif !$Rname.is-empty {
             # All package name installations happen via the symbol table as
             # BEGIN-time effects, so chase it down as if it were a constant.
             $found := self.resolve-name-constant($Rname, :$sigil)
@@ -175,9 +183,9 @@ class RakuAST::Resolver {
     }
 
     # Resolve a RakuAST::Name to a constant.
-    method resolve-name-constant(RakuAST::Name $Rname, str :$sigil) {
-        self.IMPL-RESOLVE-NAME-CONSTANT($Rname, :$sigil)
-          // self.IMPL-RESOLVE-NAME-IN-PACKAGES($Rname, :$sigil)
+    method resolve-name-constant(RakuAST::Name $Rname, str :$sigil, :$current-scope-only) {
+        self.IMPL-RESOLVE-NAME-CONSTANT($Rname, :$sigil, :$current-scope-only)
+          // ($current-scope-only ?? Nil !! self.IMPL-RESOLVE-NAME-IN-PACKAGES($Rname, :$sigil))
     }
 
     # Resolve a RakuAST::Name to a constant looking only in the setting.
@@ -256,11 +264,13 @@ class RakuAST::Resolver {
       RakuAST::Name  $constant,
                Bool :$setting,
                Bool :$partial,
+               Bool :$current-scope-only,
                 str :$sigil
     ) {
+        nqp::die('Empty name lookup not possible as a constant')
+            if $constant.is-empty;
         my @parts := nqp::clone($constant.IMPL-UNWRAP-LIST($constant.parts));
-        nqp::die('0-part name lookup not possible as a constant')
-          unless @parts;
+        nqp::shift(@parts) if nqp::istype(@parts[0], RakuAST::Name::Part::Empty);
 
         my $root := @parts.shift;
         # TODO pseudo-packages
@@ -277,6 +287,12 @@ class RakuAST::Resolver {
         my str $setting-rev;
         if ($name eq 'CORE') {
             $root := nqp::shift(@parts);
+            if nqp::istype($root, RakuAST::Name::Part::Empty) {
+                return Nil;
+            }
+            elsif nqp::istype($root, RakuAST::Name::Part::Expression) && !$root.has-compile-time-name {
+                return Nil;
+            }
             $name := $root.name;
             $setting := True;
             if (nqp::chars($name) == 3 && nqp::index($name, 'v6') == 0) {
@@ -293,7 +309,7 @@ class RakuAST::Resolver {
                )
             !! $setting
               ?? self.resolve-lexical-constant-in-setting($name, :$setting-rev)
-              !! self.resolve-lexical-constant($name);
+              !! self.resolve-lexical-constant($name, :$current-scope-only);
         $resolved
           ?? (my $symbol := $resolved.compile-time-value)
           !! (return Nil);
@@ -308,7 +324,7 @@ class RakuAST::Resolver {
                   !! '';
 
                 # Add any sigil for last iteration
-                $name := $sigil ~ $name unless @parts;
+                $name := $sigil ~ $name ~ $constant.colonpair-suffix unless @parts;
 
                 # Lookup in the current symbol's stash
                 my $next := nqp::atkey(self.IMPL-STASH-HASH($symbol),$name);
@@ -331,7 +347,17 @@ class RakuAST::Resolver {
             );
         }
 
-        $partial ?? ($symbol, List.new, 'lexical') !! $resolved
+        $partial
+            ?? (
+                $symbol,
+                nqp::stmts(
+                    (my $list := nqp::create(List)),
+                    nqp::bindattr($list, List, '$!reified', nqp::create(IterationBuffer)),
+                    $list
+                ),
+                'lexical'
+            )
+            !! $resolved
     }
 
     # Resolve a RakuAST::Name to a constant.
@@ -343,7 +369,7 @@ class RakuAST::Resolver {
     method IMPL-STASH-HASH(Mu $pkg) {
         nqp::ishash(my $hash := $pkg.WHO)
           ?? $hash
-          !! $hash.FLATTENABLE_HASH()
+          !! nqp::getattr($hash, Map, '$!storage')
     }
 
     # Resolves a lexical in the chain of outer contexts.
@@ -439,7 +465,9 @@ class RakuAST::Resolver {
             nqp::die("Could not find setting revision $setting-rev trying to look up $name");
         }
         else {
-            self.resolve-lexical-constant-in-context($!setting, $name)
+            $!setting
+                ?? self.resolve-lexical-constant-in-context($!setting, $name)
+                !! self.resolve-lexical-constant($name) # Compiling CORE.setting
         }
     }
 
@@ -483,13 +511,17 @@ class RakuAST::Resolver {
     # Check if a name is a known type.
     method is-name-type(RakuAST::Name $Rname) {
         my $constant := self.resolve-name($Rname);
-        nqp::istype($constant, RakuAST::CompileTimeValue)
-             # Name resolves, but is it an instance or a type object?
-          ?? nqp::isconcrete_nd($constant.compile-time-value)
-            ?? False
-            !! True
+        if nqp::istype($constant, RakuAST::CompileTimeValue) {
+            # Name resolves, but is it an instance or a type object?
+            my $meta-object := $constant.compile-time-value;
+            nqp::isnull($meta-object) || nqp::isconcrete_nd($meta-object)
+                ?? False
+                !! True
+        }
+        else {
              # Name doesn't resolve to a constant at all, so can't be a type.
-          !! False
+            False
+        }
     }
 
     # Check if an identifier is known (declared) at all.
@@ -545,8 +577,40 @@ class RakuAST::Resolver {
         else {
             # Could not find exception type, so build a fake (typically happens
             # during CORE.setting compilation).
-            nqp::die('nyi missing exception type fallback')
+            my $message := $type-name;
+            for %opts {
+                $message := $message ~ $_.key ~ " => " ~ ((try $_.value.gist) // (try $_.value.Str) // '<unknown>') ~ ", ";
+            }
+            RakuAST::BOOTException.new($message, %opts);
         }
+    }
+
+    method convert-exception(Mu $ex) {
+        my $Exception := self.resolve-name-constant-in-setting(RakuAST::Name.from-identifier('Exception'));
+        nqp::rethrow($ex) unless $Exception;
+        unless nqp::istype($ex, $Exception.compile-time-value) {
+            my $coercer := self.resolve-name-constant-in-setting(RakuAST::Name.from-identifier('&COMP_EXCEPTION'));
+            if $coercer {
+                $ex := $coercer.compile-time-value()($ex);
+            }
+            else {
+                nqp::rethrow($ex);
+            }
+        }
+        unless nqp::can($ex, 'SET_FILE_LINE') {
+            try {
+                my $XComp := self.resolve-name-constant-in-setting(RakuAST::Name.from-identifier-parts('X', 'Comp'));
+                $ex.HOW.mixin($ex, $XComp.compile-time-value).BUILD_LEAST_DERIVED(nqp::hash());
+            }
+        }
+        $ex
+    }
+
+    method convert-begin-time-exception(Mu $ex) {
+        $ex := self.convert-exception($ex);
+        my $xcbt := self.resolve-name(RakuAST::Name.from-identifier-parts('X', 'Comp', 'BeginTime'));
+        $ex := $xcbt.compile-time-value.new(:exception($ex), :use-case('evaluating a BEGIN')) if $xcbt;
+        $ex
     }
 
     # Add a node to the list of those with check-time problems.
@@ -567,6 +631,11 @@ class RakuAST::Resolver {
         Nil
     }
 
+    method have-check-time-problems() {
+        ($!nodes-with-check-time-problems || $!nodes-unresolved-after-check-time)
+            ?? True !! False
+    }
+
     # Produce an exception with any compile-time errors, optionally using the
     # specified one as a the main "panic" exception. Incorporates any sorries
     # and worries from check time, and also those registered by specific
@@ -575,8 +644,30 @@ class RakuAST::Resolver {
     method produce-compilation-exception(Any :$panic) {
         my $sorries := self.all-sorries;
         my $worries := self.all-worries;
-        my int $num-sorries := $sorries.elems;
-        my int $num-worries := $worries.elems;
+        my int $num-sorries := nqp::elems(RakuAST::Node.IMPL-UNWRAP-LIST($sorries));
+        my int $num-worries := nqp::elems(RakuAST::Node.IMPL-UNWRAP-LIST($worries));
+
+        if 1 < $num-sorries {
+            my $XPackageStubbed := self.resolve-name-constant-in-setting:
+                RakuAST::Name.from-identifier-parts('X', 'Package', 'Stubbed');
+            if $XPackageStubbed {
+                $XPackageStubbed := $XPackageStubbed.compile-time-value;
+                my @stubbed;
+                my @others;
+                for RakuAST::Node.IMPL-UNWRAP-LIST($sorries) {
+                    nqp::push(nqp::istype($_, $XPackageStubbed) ?? @stubbed !! @others, $_);
+                }
+                if nqp::elems(@stubbed) {
+                    my $stubbed := nqp::shift(@stubbed);
+                    while nqp::elems(@stubbed) {
+                        $stubbed.packages.append: nqp::shift(@stubbed).packages;
+                    }
+                    nqp::push(@others, $stubbed);
+                }
+                $sorries := RakuAST::Node.IMPL-WRAP-LIST(@others);
+                $num-sorries := $sorries.elems;
+            }
+        }
 
         if $panic && $num-sorries == 0 && $num-worries == 0 {
             # There's just the panic, so return it without an enclosing group.
@@ -584,7 +675,7 @@ class RakuAST::Resolver {
         }
         elsif !$panic && $num-sorries == 1 && $num-worries == 0 {
             # Only one sorry and no worries, so no need to wrap that either.
-            $sorries.AT-POS(0)
+            RakuAST::Node.IMPL-UNWRAP-LIST($sorries)[0];
         }
         elsif $num-sorries || $num-worries {
             # Resolve the group exception type.
@@ -592,13 +683,16 @@ class RakuAST::Resolver {
                 RakuAST::Name.from-identifier-parts('X', 'Comp', 'Group');
             if $XCompGroup-res {
                 my $XCompGroup := $XCompGroup-res.compile-time-value;
+                if !$panic && $num-sorries {
+                    $panic := nqp::pop(RakuAST::Node.IMPL-UNWRAP-LIST($sorries));
+                }
                 $panic
                   ?? $XCompGroup.new(:$panic, :$sorries, :$worries)
                   !! $XCompGroup.new(         :$sorries, :$worries)
             }
             # Fallback if missing group.
             else {
-                $panic || $sorries.AT-POS(0)
+                $panic || RakuAST::Node.IMPL-UNWRAP-LIST($sorries)[0]
             }
         }
         else {
@@ -663,17 +757,53 @@ class RakuAST::Resolver {
         if %routines || %types {
             my %routine-suggestion;
             my %type-suggestion;
+            my %post-types;
             for %routines {
                 my $name := $_.key;
-                my @suggestions := self.suggest-routines($name);
-                %routine-suggestion{$name} := @suggestions;
+                # no sigil or &
+                if nqp::eqat($name, '&', 0) || $name ge 'a' {
+                    my @suggestions := self.suggest-routines($name);
+                    %routine-suggestion{$name} := @suggestions;
+                }
+                else { # Unknown types may get parsed as routine names
+                    my @suggestions := self.suggest-typename($name);
+                    %type-suggestion{$name} := @suggestions;
+                }
+
+                my $constant := self.resolve-name(RakuAST::Name.from-identifier($name));
+                if nqp::istype($constant, RakuAST::CompileTimeValue) {
+                    # Name resolves, but is it an instance or a type object?
+                    my $meta-object := $constant.compile-time-value;
+                    unless nqp::isnull($meta-object) || nqp::isconcrete_nd($meta-object) {
+                        %post-types{$name} := [] unless nqp::existskey(%post-types, $name);
+                        nqp::push(%post-types{$name}, $constant.origin ?? $constant.origin.from !! -1);
+                    }
+                }
             }
-            @exceptions.push: self.build-exception: 'X::Undeclared::Symbols',
-                :$filename,
-                :routine_suggestion(nqp::hllizefor(%routine-suggestion, 'Raku')),
-                :type_suggestion(nqp::hllizefor(%type-suggestion, 'Raku')),
-                :unk_types(nqp::hllizefor(%types, 'Raku')),
-                :unk_routines(nqp::hllizefor(%routines, 'Raku'));
+            for %types {
+                my $name := $_.key;
+                my @suggestions := self.suggest-typename($name);
+                %type-suggestion{$name} := @suggestions;
+            }
+
+            if nqp::elems(%routines) == 0 && nqp::elems(%types) == 1 && nqp::elems(%post-types) == 0 {
+                for %types {
+                    @exceptions.push: self.build-exception: 'X::Undeclared',
+                        :$filename,
+                        :what<Type>,
+                        :suggestions(nqp::hllizefor(%type-suggestion, 'Raku')),
+                        :symbol($_.key),
+                }
+            }
+            else {
+                @exceptions.push: self.build-exception: 'X::Undeclared::Symbols',
+                    :$filename,
+                    :routine_suggestion(nqp::hllizefor(%routine-suggestion, 'Raku')),
+                    :type_suggestion(nqp::hllizefor(%type-suggestion, 'Raku')),
+                    :unk_types(nqp::hllizefor(%types, 'Raku')),
+                    :unk_routines(nqp::hllizefor(%routines, 'Raku')),
+                    :post_types(nqp::hllizefor(%post-types, 'Raku'));
+            }
         }
         RakuAST::Node.IMPL-WRAP-LIST(@exceptions)
     }
@@ -781,11 +911,28 @@ class RakuAST::Resolver::EVAL
 
     # Resolves a lexical to its declaration. The declaration must have a
     # compile-time value.
-    method resolve-lexical-constant(Str $name) {
+    method resolve-lexical-constant(Str $name, Bool :$current-scope-only) {
 
         # No need to look further
         if $name eq 'GLOBAL' {
             self.global-package;
+        }
+
+        # If it's in the current scope only, just look at the top one, if any
+        elsif $current-scope-only {
+            my @scopes := $!scopes;
+            my $found := nqp::elems(@scopes)
+                ?? @scopes[nqp::elems(@scopes) - 1].find-lexical($name)
+                !! Nil;
+            if nqp::isconcrete($found) {
+                if nqp::istype($found,RakuAST::CompileTimeValue) {
+                    return $found;
+                }
+                else {
+                    nqp::die("Symbol '$name' does not have a compile-time value");
+                }
+            }
+            Nil
         }
 
         # Walk active scopes, most nested first.
@@ -826,11 +973,11 @@ class RakuAST::Resolver::Compile
     has Mu $!worries;
 
     # Create a resolver from given arguments
-    method new(Mu :$setting!, Mu :$outer!, Mu :$global!, Mu :$scopes) {
+    method new(Mu :$setting!, Mu :$outer!, Mu :$global!, Mu :$scopes, Mu :$attach-targets) {
         my $obj := nqp::create(self);
         nqp::bindattr($obj, RakuAST::Resolver, '$!setting', $setting);
         nqp::bindattr($obj, RakuAST::Resolver, '$!outer', $outer);
-        nqp::bindattr($obj, RakuAST::Resolver, '$!attach-targets', nqp::hash());
+        nqp::bindattr($obj, RakuAST::Resolver, '$!attach-targets', $attach-targets // nqp::hash());
         nqp::bindattr($obj, RakuAST::Resolver, '$!global', $global);
         nqp::bindattr($obj, RakuAST::Resolver, '$!packages', []);
 
@@ -851,7 +998,8 @@ class RakuAST::Resolver::Compile
             :$setting,
             :outer($resolver ?? $setting !! $context),
             :$global,
-            :scopes($resolver ?? nqp::getattr($resolver, RakuAST::Resolver::Compile, '$!scopes') !! Mu)
+            :scopes($resolver ?? nqp::clone(nqp::getattr($resolver, RakuAST::Resolver::Compile, '$!scopes')) !! Mu),
+            :attach-targets($resolver ?? $resolver.IMPL-CLONE-ATTACH-TARGETS !! Mu),
         )
     }
 
@@ -865,7 +1013,7 @@ class RakuAST::Resolver::Compile
     # version.
     method from-setting(Str :$setting-name!) {
         my $loader := nqp::gethllsym('Raku', 'ModuleLoader');
-        my $setting := $loader.load_setting($setting-name);
+        my $setting := $setting-name eq 'NULL.c' ?? nqp::null !! $loader.load_setting($setting-name);
         # We can't actually have the global yet, since the resolver is
         # needed in order to look up the package meta-object used to
         # create it. Thus it's set later.
@@ -919,6 +1067,14 @@ class RakuAST::Resolver::Compile
         Nil
     }
 
+    method re-enter-scope(RakuAST::Resolver::Compile::Scope $scope) {
+        nqp::push($!scopes, $scope);
+        if nqp::istype($scope.scope, RakuAST::AttachTarget) {
+            self.push-attach-target($scope.scope);
+        }
+        Nil
+    }
+
     # Indicates that any implicit declarations for the current scope should now
     # come into force. Only used in compilation mode. Called by the compiler at
     # the appropriate point.
@@ -935,7 +1091,7 @@ class RakuAST::Resolver::Compile
         if nqp::istype($scope.scope, RakuAST::AttachTarget) {
             self.pop-attach-target($scope.scope);
         }
-        Nil
+        $scope
     }
 
     # Walks scopes from inner to outer and returns the first concrete value
@@ -956,6 +1112,12 @@ class RakuAST::Resolver::Compile
     # declaration, so that we can resolve it without requiring it to be
     # linked into the tree.
     method declare-lexical(RakuAST::Declaration $decl) {
+        CATCH {
+            if nqp::istype(nqp::getpayload($_), RakuAST::Exception::TooComplex) {
+                self.build-exception('X::Syntax::Extension::TooComplex', name => nqp::getpayload($_).name).throw;
+            }
+            nqp::rethrow($_);
+        }
         $!scopes[nqp::elems($!scopes) - 1].declare-lexical($decl)
     }
 
@@ -963,6 +1125,12 @@ class RakuAST::Resolver::Compile
     # Used when the compiler produces the declaration, but already entered into
     # that declaration's inner scope.
     method declare-lexical-in-outer(RakuAST::Declaration $decl) {
+        CATCH {
+            if nqp::istype(nqp::getpayload($_), RakuAST::Exception::TooComplex) {
+                self.build-exception('X::Syntax::Extension::TooComplex', name => nqp::getpayload($_).name).throw;
+            }
+            nqp::rethrow($_);
+        }
         $!scopes[nqp::elems($!scopes) - 2].declare-lexical($decl)
     }
 
@@ -994,9 +1162,27 @@ class RakuAST::Resolver::Compile
 
     # Resolves a lexical to its declaration. The declaration must have a
     # compile-time value.
-    method resolve-lexical-constant(Str $name) {
+    method resolve-lexical-constant(Str $name, Bool :$current-scope-only) {
         if $name eq 'GLOBAL' {
             return self.global-package;
+        }
+
+        # If it's in the current scope only, just look at the top one, if any
+        if $current-scope-only {
+            my @scopes := $!scopes;
+            my int $i := nqp::elems(@scopes);
+            if ($i > 0) {
+                my $found := @scopes[$i - 1].find-lexical($name);
+                if nqp::isconcrete($found) {
+                    if nqp::istype($found, RakuAST::CompileTimeValue) {
+                        return $found;
+                    }
+                    else {
+                        nqp::die("Symbol '$name' does not have a compile-time value");
+                    }
+                }
+            }
+            return Nil;
         }
 
         # Walk active scopes, most nested first.
@@ -1028,7 +1214,10 @@ class RakuAST::Resolver::Compile
 
     # Add a worry check-time problem produced by the compiler.
     method add-worry(Any $exception) {
-        nqp::push($!worries, $exception);
+        my $worries := self.find-scope-property(-> $scope { $scope.tell-worries });
+        if !nqp::isconcrete($worries) || $worries {
+            nqp::push($!worries, $exception);
+        }
         Nil
     }
     method has-worries() { nqp::elems($!worries) > 0 }
@@ -1188,6 +1377,14 @@ class RakuAST::Resolver::Compile
                 $seen{$name} := 1;
                 $inner-evaluator($name);
             }
+            if nqp::istype($scope.scope, RakuAST::Package::Attachable) {
+                for $scope.scope.attached-attributes {
+                    my $name := $_.lexical-name;
+                    next if nqp::existskey($seen, $name);
+                    $seen{$name} := 1;
+                    $inner-evaluator($name);
+                }
+            }
         }
 
         my $ctx := nqp::getattr(self, RakuAST::Resolver, '$!outer');
@@ -1262,6 +1459,46 @@ class RakuAST::Resolver::Compile
         }
         return @suggestions;
     }
+
+    method suggest-typename(Str $name) {
+        # Set up lookup for newbie type errors in typenames
+        my $newbies := nqp::hash(
+          'Integer',   ('Int',),
+          'integer',   ('Int','int'),
+          'Float',     ('Num',),
+          'float',     ('Num','num'),
+          'Number',    ('Num',),
+          'number',    ('Num','num'),
+          'String',    ('Str',),
+          'string',    ('Str','str'),
+        );
+
+        my %seen;
+        %seen{$name} := 1;
+        my @candidates := [[], [], []];
+        my &inner-evaluator := self.make_levenshtein_evaluator($name, @candidates);
+        my @suggestions;
+
+        if (my @alternates := nqp::atkey($newbies, $name)) {
+            for @alternates {
+                nqp::push(@suggestions, $_);
+            }
+        }
+
+        my &evaluator := -> $name {
+            # only care about type objects
+            my $first := nqp::substr($name, 0, 1);
+            unless $first eq '$' || $first eq '%' || $first eq '@' || $first eq '&' || $first eq ':' {
+                #unless !$has_object || (nqp::isconcrete($object) && !nqp::istype($object.HOW, Perl6::Metamodel::EnumHOW)) {
+                &inner-evaluator($name);
+            }
+        }
+        self.walk-scopes(%seen, &evaluator);
+
+        self.levenshtein_candidate_heuristic(@candidates, @suggestions);
+
+        return @suggestions;
+    }
 }
 
 #-------------------------------------------------------------------------------
@@ -1318,7 +1555,7 @@ class RakuAST::Resolver::Compile::Scope
         nqp::die('Should not be calling declare-lexical in batch mode')
           if $!batch-mode;
         my $name    := $decl.lexical-name;
-        my $existed := nqp::existskey($!live-decl-map, $name);
+        my $existed := nqp::atkey($!live-decl-map, $name);
         $!live-decl-map{$decl.lexical-name} := $decl;
         $existed
     }

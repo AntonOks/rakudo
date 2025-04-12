@@ -73,9 +73,12 @@ class RakuAST::Type
 class RakuAST::Type::Simple
   is RakuAST::Type
   is RakuAST::ParseTime
+  is RakuAST::CheckTime
   is RakuAST::Lookup
 {
     has RakuAST::Name $.name;
+    has Mu $!package;
+    has RakuAST::Node $!lexical;
 
     method new(RakuAST::Name $name) {
         my $obj := nqp::create(self);
@@ -88,10 +91,39 @@ class RakuAST::Type::Simple
             :target(self.meta-object.raku), :is-type(1)
     }
 
+    method undeclared-symbol-details() {
+        RakuAST::UndeclaredSymbolDescription::Type.new(self.name.canonicalize)
+    }
+
+    method return-type() {
+        self.is-resolved ?? self.resolution.compile-time-value !! Mu
+    }
+
     method PERFORM-PARSE(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
-        my $resolved := $resolver.resolve-name-constant(self.name);
+        nqp::bindattr(self, RakuAST::Type::Simple, '$!package', $resolver.current-package);
+        my $resolved := $resolver.resolve-name-constant(self.name) unless self.name.is-empty;
         if $resolved {
             self.set-resolution($resolved);
+
+            my $value := $resolved.compile-time-value;
+            if $!name.is-multi-part && nqp::can($value.HOW, 'archetypes') && !$value.HOW.archetypes.generic && nqp::istype($value.HOW, Perl6::Metamodel::PackageHOW) {
+                my $resolved := $resolver.resolve-lexical-constant($!name.IMPL-UNWRAP-LIST($!name.parts)[0].name);
+                if $resolved {
+                    nqp::bindattr(self, RakuAST::Type::Simple, '$!lexical', $resolved);
+                }
+            }
+        }
+    }
+
+    # Second chance to resolve for compiling the setting.
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        unless self.is-resolved {
+            self.PERFORM-PARSE($resolver, $context);
+        }
+
+        if self.is-resolved {
+            self.add-sunk-worry($resolver, self.origin ?? self.origin.Str !! self.DEPARSE)
+                if self.sunk && !(self.resolution.compile-time-value =:= Nil);
         }
     }
 
@@ -100,13 +132,43 @@ class RakuAST::Type::Simple
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
-        my $value := self.resolution.compile-time-value;
-        if $value.HOW.archetypes.generic {
-            QAST::Var.new( :name($!name.canonicalize), :scope('lexical') )
+        if !self.is-resolved {
+            # Try again at runtime
+            if $!name.is-multi-part {
+                if $!lexical {
+                    return $!name.IMPL-QAST-PACKAGE-LOOKUP($context, $!package, :lexical($!lexical), :global-fallback);
+                }
+                else {
+                    # No other choice than to do a runtime lookup in GLOBAL
+                    my $name := RakuAST::Name.new(
+                        RakuAST::Name::Part::Simple.new('GLOBAL'),
+                        |$!name.IMPL-UNWRAP-LIST($!name.parts)
+                    );
+                    return $name.IMPL-QAST-PACKAGE-LOOKUP($context, Mu, :global-fallback);
+                }
+            }
+            else {
+                QAST::Var.new( :name($!name.canonicalize), :scope('lexical') )
+            }
         }
         else {
-            $context.ensure-sc($value);
-            QAST::WVal.new( :$value )
+            my $value := self.resolution.compile-time-value;
+            if nqp::can($value.HOW, 'archetypes') && $value.HOW.archetypes.generic {
+                QAST::Var.new( :name($!name.canonicalize), :scope('lexical') )
+            }
+            elsif $!name.is-multi-part && nqp::istype($value.HOW, Perl6::Metamodel::PackageHOW) {
+                # Package stub could be replaced later, thus we need to look it up at runtime.
+                $!name.IMPL-QAST-PACKAGE-LOOKUP($context, $!package, :lexical($!lexical), :global-fallback);
+            }
+            elsif $!name.canonicalize eq 'GLOBAL' {
+                # We must always look up GLOBAL at runtime. Otherwise we'd e.g. use the setting's
+                # GLOBAL in EVAL.
+                QAST::Op.new(:op<getcurhllsym>, QAST::SVal.new(:value<GLOBAL>));
+            }
+            else {
+                $context.ensure-sc($value);
+                QAST::WVal.new( :$value )
+            }
         }
     }
 
@@ -358,7 +420,8 @@ class RakuAST::Type::Capture
 
 class RakuAST::Type::Parameterized
   is RakuAST::Type::Derived
-  is RakuAST::Declaration
+  is RakuAST::BeginTime
+  is RakuAST::CheckTime
 {
     has RakuAST::ArgList $.args;
 
@@ -376,11 +439,38 @@ class RakuAST::Type::Parameterized
         $visitor($!args);
     }
 
+    method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        my $ptype := self.IMPL-BASE-TYPE.compile-time-value;
+        unless nqp::can($ptype.HOW, 'parameterize') || ($*COMPILING_CORE_SETTING // 0) == 1 {
+            $resolver.build-exception('X::NotParametric', type => $ptype).throw;
+        }
+
+        my $args := $!args.IMPL-UNWRAP-LIST($!args.args);
+        my $fail := 0;
+        for $args -> $arg {
+            if nqp::istype($arg, RakuAST::Lookup) && !$arg.is-resolved && $arg.needs-resolution {
+                $resolver.add-node-unresolved-after-check-time($arg);
+                $fail := 1;
+            }
+        }
+        if $fail {
+            $resolver.produce-compilation-exception.throw;
+        }
+
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        if $!args.IMPL-HAS-ONLY-COMPILE-TIME-VALUES && !$resolver.have-check-time-problems {
+            # Force parameterization now
+            self.meta-object;
+        }
+    }
+
     method PRODUCE-META-OBJECT() {
         if !$!args.args {
             self.base-type.compile-time-value
         }
-        elsif $!args.IMPL-HAS-ONLY-COMPILE-TIME-VALUES {
+        elsif $!args.IMPL-HAS-ONLY-COMPILE-TIME-VALUES(:allow-generic, :allow-variable) {
             my $args := $!args.IMPL-COMPILE-TIME-VALUES;
             my @pos := $args[0];
             my %named := $args[1];
@@ -388,8 +478,8 @@ class RakuAST::Type::Parameterized
             $ptype.HOW.parameterize($ptype, |@pos, |%named)
         }
         else {
-            my $args := $!args.args;
-            if nqp::istype($args.AT-POS(0), RakuAST::QuotedString) {
+            my $args := $!args.IMPL-UNWRAP-LIST($!args.args);
+            if nqp::istype($args[0], RakuAST::QuotedString) {
                 my int $is-only-quoted-string;
                 my int $arg-count;
                 for self.IMPL-UNWRAP-LIST($args) {
@@ -420,7 +510,9 @@ class RakuAST::Type::Parameterized
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         if !$!args.args {
-            QAST::WVal.new( :value(self.base-type.compile-time-value) )
+            my $value := self.base-type.compile-time-value;
+            $context.ensure-sc($value);
+            QAST::WVal.new( :$value )
         }
         elsif $!args.IMPL-HAS-ONLY-COMPILE-TIME-VALUES {
             my $value := self.meta-object;
@@ -429,6 +521,7 @@ class RakuAST::Type::Parameterized
         }
         else {
             my $ptype := self.base-type.compile-time-value;
+            $context.ensure-sc($ptype);
             my $ptref := QAST::WVal.new( :value($ptype) );
             my $qast := QAST::Op.new(:op<callmethod>, :name<parameterize>, QAST::Op.new(:op<how>, $ptref), $ptref);
             $!args.IMPL-ADD-QAST-ARGS($context, $qast);
@@ -492,7 +585,7 @@ class RakuAST::Type::Enum
 
     method default-scope() { 'our' }
 
-    method allowed-scopes() { self.IMPL-WRAP-LIST(['my', 'our']) }
+    method allowed-scopes() { self.IMPL-WRAP-LIST(['anon', 'my', 'our']) }
 
     method dba() { 'enum' }
 
@@ -514,6 +607,7 @@ class RakuAST::Type::Enum
 
     method is-lexical() { True }
     method is-simple-lexical-declaration() { False }
+    method is-stub() { False }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         my $qast := QAST::Op.new(:op('call'), :name('&ENUM_VALUES'), $!term.IMPL-EXPR-QAST($context));
@@ -527,7 +621,6 @@ class RakuAST::Type::Enum
     method PRODUCE-IMPLICIT-LOOKUPS() {
         self.IMPL-WRAP-LIST([
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Pair')),
-            RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('List')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Stringy')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Numeric'))
         ])
@@ -543,11 +636,10 @@ class RakuAST::Type::Enum
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         nqp::bindattr(self, RakuAST::Type::Enum, '$!current-package', $resolver.current-package);
 
-        my $lookups := self.get-implicit-lookups;
-        my $Pair    := $lookups.AT-POS(0).resolution.compile-time-value;
-        my $List    := $lookups.AT-POS(1).resolution.compile-time-value;
-        my $Stringy := $lookups.AT-POS(2).resolution.compile-time-value;
-        my $Numeric := $lookups.AT-POS(3).resolution.compile-time-value;
+        my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
+        my $Pair    := $lookups[0].resolution.compile-time-value;
+        my $Stringy := $lookups[1].resolution.compile-time-value;
+        my $Numeric := $lookups[2].resolution.compile-time-value;
 
         my $base-type;
         my $has-base-type := False;
@@ -555,55 +647,87 @@ class RakuAST::Type::Enum
             $base-type := $!of.compile-time-value;
             $has-base-type := True;
         }
-        my %values := nqp::hash;
+        my @values := nqp::list;
         my $cur-val := nqp::box_i(-1, Int); # Boxed to support .succ
-        my $evaluated := self.IMPL-BEGIN-TIME-EVALUATE($!term, $resolver, $context);
-        my $is-settings-list := nqp::istype($evaluated, $List);
-        if nqp::istype($evaluated, $Pair) {
-            if !$has-base-type {
-                # No need for type checking when we are going to get the base-type from the value
-                %values{$evaluated.key} := $evaluated.value;
-                $base-type := $evaluated.value.WHAT;
-            } else {
-                unless nqp::istype($evaluated.value, $!base-type) {
-                    nqp::die("Incorrect value type provided. Expected '" ~ $!base-type.raku ~ "' but got '" ~ $evaluated.value.WHAT.raku ~ "'");
+        if $*COMPILING_CORE_SETTING
+            && $!term.semilist.IMPL-IS-SINGLE-EXPRESSION
+            && nqp::istype((my $expression := $!term.IMPL-UNWRAP-LIST($!term.semilist.statements)[0].expression), RakuAST::ApplyListInfix)
+            && $expression.infix.operator eq ','
+        {
+            # must handle bootstrapping enums here
+            my $operands := $expression.IMPL-UNWRAP-LIST($expression.operands);
+            for $operands {
+                if nqp::istype($_, RakuAST::ColonPair::Value) {
+                    nqp::die('Can only declare simple enums in setting ' ~ $_.dump) unless $_.IMPL-CAN-INTERPRET;
+                    my $value := $_.value.IMPL-INTERPRET($context);
+                    if $has-base-type {
+                        unless nqp::objprimspec($base-type) || nqp::istype($value, $base-type) {
+                            nqp::die("Type error in enum. Got '" ~ $value.HOW.name($value) ~ "'"
+                                    ~ " Expected: '" ~ $base-type.HOW.name($base-type) ~ "'"
+                            );
+                        }
+                    }
+                    else {
+                        $base-type := $value.WHAT;
+                        $has-base-type := 1;
+                    }
+                    nqp::push(@values, [$_.key, $value]);
                 }
-                %values{$evaluated.key} := $evaluated.value;
+                elsif nqp::istype($_, RakuAST::FatArrow) {
+                    my $value := self.IMPL-BEGIN-TIME-EVALUATE($_.value, $resolver, $context);
+                    if $has-base-type {
+                        unless nqp::istype($value, $base-type) {
+                            nqp::die("Type error in enum. Got '" ~ $value.HOW.name($value) ~ "'"
+                                    ~ " Expected: '" ~ $base-type.HOW.name($base-type) ~ "'"
+                            );
+                        }
+                    }
+                    else {
+                        $base-type := $value.WHAT;
+                        $has-base-type := 1;
+                    }
+                    nqp::push(@values, [$_.key, $value]);
+                }
+                else {
+                    nqp::die('NYI ' ~ $_.HOW.name($_));
+                }
             }
-        } elsif nqp::istype($evaluated, Str) {
-            # TODO: What do we actually want to do when base-type is defined but they only provide a single Str?
-            #       Base just ignores and uses Int
-            # A single string enum will always have 0, but we use $cur-val to keep it boxed
-            %values{$evaluated} := $cur-val.succ;
-            $base-type := Int;
-        } elsif nqp::istype($evaluated, List) || $is-settings-list {
-            my @items := self.IMPL-UNWRAP-LIST($evaluated);
-            if nqp::elems(@items) == 0 {
-                # For empty enums, just default to Int
-                $base-type := Int;
-            } else {
-                for @items {
-                    if nqp::istype($_, $Pair) {
-                        $cur-val := $_.value;
-                        if !$has-base-type {
-                            $base-type := $cur-val.WHAT;
-                            $has-base-type := True;
-                        } else {
-                            # Should be a panic or a throw, right?
-                            unless nqp::istype($cur-val, $!base-type) {
-                                nqp::die("Incorrect value type provided. Expected '" ~ $!base-type.raku ~ "' but got '" ~ $cur-val.WHAT.raku ~ "'");
+        }
+        else {
+            my $evaluated := self.IMPL-BEGIN-TIME-EVALUATE($!term, $resolver, $context);
+            $evaluated := $evaluated.List if nqp::isconcrete($evaluated);
+            if nqp::istype($evaluated, List) {
+                my @items := self.IMPL-UNWRAP-LIST($evaluated);
+                if nqp::elems(@items) == 0 {
+                    # For empty enums, just default to Int
+                    $base-type := Int;
+                } else {
+                    for @items {
+                        if nqp::istype($_, $Pair) {
+                            $cur-val := $_.value;
+                            if !$has-base-type {
+                                $base-type := $cur-val.WHAT;
+                                $has-base-type := True;
+                            } else {
+                                # Should be a panic or a throw, right?
+                                unless nqp::istype($cur-val, $!base-type) {
+                                    nqp::die("Incorrect value type provided. Expected '" ~ $!base-type.raku ~ "' but got '" ~ $cur-val.WHAT.raku ~ "'");
+                                }
                             }
+                            nqp::push(@values, [$_.key, $_.value]);
+                        } elsif nqp::istype($_, Str) {
+                            if !$has-base-type {
+                                # TODO: Again, uncertain what to do when user provides a base type but then only hands a list of Str
+                                $base-type := Int;
+                                $has-base-type := True;
+                            }
+                            nqp::push(@values, [$_, ($cur-val := $cur-val.succ)]);
                         }
-                        %values{$_.key} := $cur-val;
-                    } elsif nqp::istype($_, Str) {
-                        if !$has-base-type {
-                            # TODO: Again, uncertain what to do when user provides a base type but then only hands a list of Str
-                            $base-type := Int;
-                            $has-base-type := True;
-                        }
-                        %values{$_} := ($cur-val := $cur-val.succ);
                     }
                 }
+            }
+            else {
+                $base-type := Int;
             }
         }
 
@@ -642,11 +766,12 @@ class RakuAST::Type::Enum
         }
 
         # Create type objects for each value and install into proper scop
-        my %stash := $resolver.IMPL-STASH-HASH($anonymous ?? $!current-package !! $meta);
+        my %meta-stash := $resolver.IMPL-STASH-HASH($meta);
+        my %package-stash := $resolver.IMPL-STASH-HASH($!current-package);
         my int $index;
-        for %values -> $pair {
-            my $key     := $pair.key;
-            my $value   := $pair.value;
+        for @values -> $pair {
+            my $key   := $pair[0];
+            my $value := $pair[1];
 
             if !nqp::defined($value) {
                 nqp::die("Using a type object as a value for an enum not yet implemented. Sorry.");
@@ -665,15 +790,17 @@ class RakuAST::Type::Enum
 #            if nqp::existskey(%stash, $key) {
 #                nqp::die("Redeclaration of symbol '" ~ $key ~ "'.");
 #            }
-            unless $anonymous && self.scope eq 'my' {
-                %stash{$key} := $val-meta;
+            %meta-stash{$key} := $val-meta;
+            unless self.scope eq 'my' {
+                %package-stash{$key} := $val-meta;
             }
 
             # Declare these values into the lexical scope
             # TODO: Bind an X::PoisonedAlias when a lexical already exists
             #   (Which is tricky, because base only does it when there is a clash in the current lexpad...)
-            $resolver.current-scope.add-generated-lexical-declaration:
-                RakuAST::VarDeclaration::Implicit::Constant.new(
+            $resolver.current-scope.merge-generated-lexical-declaration:
+                :resolver($resolver),
+                RakuAST::VarDeclaration::Implicit::EnumValue.new(
                     :name($key),
                     :scope(self.scope),
                     :value($val-meta)
@@ -684,6 +811,18 @@ class RakuAST::Type::Enum
 
     method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         self.add-trait-sorries;
+
+        self.check-scope($resolver, 'enum');
+
+        unless self.meta-object.HOW.enum_value_list(self.meta-object) {
+            for self.IMPL-UNWRAP-LIST($!term.find-nodes(RakuAST::Var::Lexical)) {
+                my $var := $_.origin.Str;
+                self.add-worry:
+                    $resolver.build-exception: 'X::AdHoc', :payload(
+                        "No values supplied to enum (does $var need to be declared constant?)"
+                    );
+            }
+        }
     }
 
     method PRODUCE-META-OBJECT() {
@@ -706,7 +845,7 @@ class RakuAST::Type::Subset
   is RakuAST::Doc::DeclaratorTarget
 {
     has RakuAST::Name       $.name;
-    has RakuAST::Trait::Of  $.of;
+    has RakuAST::Type       $.of;
     has RakuAST::Expression $.where;
 
     has Mu $!current-package;
@@ -714,7 +853,7 @@ class RakuAST::Type::Subset
 
     method new(          str :$scope,
                RakuAST::Name :$name!,
-          RakuAST::Trait::Of :$of,
+               RakuAST::Type :$of,
          RakuAST::Expression :$where,
                         List :$traits,
     RakuAST::Doc::Declarator :$WHY
@@ -740,7 +879,7 @@ class RakuAST::Type::Subset
             nqp::istype($_, RakuAST::Trait::Of)
               ?? $!of
                 ?? nqp::die("Cannot declare more than one 'of' trait per subset")
-                !! nqp::bindattr(self, RakuAST::Type::Subset, '$!of', $_)
+                !! nqp::bindattr(self, RakuAST::Type::Subset, '$!of', $_.type)
               !! self.add-trait($_);
         }
     }
@@ -777,7 +916,7 @@ class RakuAST::Type::Subset
 
     method is-coercive() {
         $!of
-            ?? $!of.type.is-coercive
+            ?? $!of.is-coercive
             !! False
     }
 
@@ -852,6 +991,8 @@ class RakuAST::Type::Subset
 
         self.meta-object; # Finish meta-object setup so compile time type-checks will be correct
         if $block && $block.IMPL-CURRIED {
+            $block.IMPL-CHECK($resolver, $context, False);
+            $resolver.panic(Any) if $resolver.all-sorries.elems;
             # Cache QAST with expression as the BEGIN time stub wont know how to get that
             $block.IMPL-CURRIED.IMPL-QAST-BLOCK($context, :blocktype<declaration_static>, :expression($block));
         }
@@ -859,13 +1000,15 @@ class RakuAST::Type::Subset
 
     method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         self.add-trait-sorries;
+
+        self.check-scope($resolver, 'subset');
     }
 
     method PRODUCE-STUBBED-META-OBJECT() {
         Perl6::Metamodel::SubsetHOW.new_type(
             :name($!name.canonicalize),
             :refinee(Any),
-            :refinement(Any)
+            :refinement(nqp::null)
         )
     }
 
@@ -873,8 +1016,7 @@ class RakuAST::Type::Subset
         my $type  := self.stubbed-meta-object;
         my $block := $!block;
 
-        $type.HOW.set_of($type, $!of.type.meta-object)
-          if $!of;
+        $type.HOW.set_of($type, $!of.meta-object) if $!of;
         $type.HOW.set_where($type, $block
           ?? $block.IMPL-CURRIED
             ?? $block.IMPL-CURRIED.meta-object

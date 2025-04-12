@@ -3467,7 +3467,7 @@ class Perl6::World is HLL::World {
         has $!acc_sig_cache;
         has $!acc_sig_cache_type;
 
-        # The generic BUILDALL method for empty BUILDPLANs
+        # The generic POPULATE method for empty BUILDPLANs
         has $!empty_buildplan_method;
 
         # Types we always need
@@ -3480,7 +3480,6 @@ class Perl6::World is HLL::World {
 
         # Parameters we always need
         has $!pself;
-        has $!pauto;
         has $!pinit;
         has $!p_;
 
@@ -3513,7 +3512,6 @@ class Perl6::World is HLL::World {
             $!X-Attribute-Required   := $X-Attribute-Required;
 
             $!pself := QAST::Var.new(:decl<param>, :scope<local>, :name<self>);
-            $!pauto := QAST::Var.new(:decl<param>, :scope<local>, :name<@auto>);
             $!pinit := QAST::Var.new(:decl<param>, :scope<local>, :name<%init>);
             $!p_    := QAST::Var.new(:decl<param>, :scope<local>, :name('_'),
               :slurpy, :named);
@@ -3625,7 +3623,7 @@ class Perl6::World is HLL::World {
 
         # Generate a method for building a new object that takes a hash
         # with attribute => value pairs to be assigned to the object's
-        # attributes.  Basically a flattened version of Mu.BUILDALL, which
+        # attributes.  Basically a flattened version of Mu.POPULATE, which
         # iterates over the BUILDALLPLAN at runtime with fewer inlining
         # and JITting opportunities.
         method generate_buildplan_executor($/, $in_object, $in_build_plan) {
@@ -3650,11 +3648,11 @@ class Perl6::World is HLL::World {
                 my $stmts := QAST::Stmts.new(:node(nqp::decont($/)));
 
                 my $declarations :=
-                  QAST::Stmts.new($!pself, $!pauto, $!pinit, $!dinit);
+                  QAST::Stmts.new($!pself, $!pinit, $!dinit);
 
                 # The block of the method
                 my $block := QAST::Block.new(
-                  :name<BUILDALL>, :blocktype<declaration_static>,
+                  :name<POPULATE>, :blocktype<declaration_static>,
                   $declarations
                 );
 
@@ -3669,7 +3667,7 @@ class Perl6::World is HLL::World {
 #                $stmts.push(
 #                  QAST::Op.new( :op<say>,
 #                    QAST::SVal.new( :value(
-#                      $object.HOW.name($object) ~ '.BUILDALL called'
+#                      $object.HOW.name($object) ~ '.POPULATE called'
 #                    ))
 #                  ),
 #                );
@@ -4047,7 +4045,7 @@ class Perl6::World is HLL::World {
                         }
 
                         else {
-                            nqp::die('Invalid ' ~ $object.HOW.name($object) ~ '.BUILDALL plan: ' ~ $code);
+                            nqp::die('Invalid ' ~ $object.HOW.name($object) ~ '.POPULATE plan: ' ~ $code);
                         }
                     }
 
@@ -4147,8 +4145,8 @@ class Perl6::World is HLL::World {
 
 # submethod :: (Any:D:) { self }
                 my $block := QAST::Block.new(
-                  :name<BUILDALL>, :blocktype<declaration_static>,
-                  QAST::Stmts.new($!pself, $!pauto, $!pinit),
+                  :name<POPULATE>, :blocktype<declaration_static>,
+                  QAST::Stmts.new($!pself, $!pinit),
                   $!self
                 );
 
@@ -4244,11 +4242,6 @@ class Perl6::World is HLL::World {
                 self.throw($/, 'X::NotParametric', type => $role);
             }
             my $curried := $role.HOW.parameterize($role, |@pos_args, |%named_args);
-            if nqp::isconcrete($curried)
-              && nqp::istype($curried, self.find_single_symbol_in_setting("Str")) {
-                self.throw($/, 'X::AdHoc', payload => $curried)
-            }
-
             self.add_object_if_no_sc($curried)
         }
         else {
@@ -5738,9 +5731,11 @@ class Perl6::World is HLL::World {
             } elsif nqp::islist($target) {
                 my @result;
                 @result.push("(");
-                for $target -> $val {
-                    @result.push(",") if +@result != 1;
-                    @result.push(safely_stringify($val));
+                try {
+                    for $target -> $val {
+                        @result.push(",") if +@result != 1;
+                        @result.push(safely_stringify($val));
+                    }
                 }
                 @result.push(")");
                 return join('', @result);

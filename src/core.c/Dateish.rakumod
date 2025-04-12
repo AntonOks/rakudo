@@ -3,7 +3,7 @@ my role Dateish {
     has int $.month;
     has int $.day;
     has int $.daycount;
-    has     &.formatter;
+    has     &.formatter is built(:bind);
 
     method IO(Dateish:D: --> IO::Path:D) {  # because Dateish is not Cool
         IO::Path.new(~self)
@@ -43,9 +43,6 @@ my role Dateish {
     method !year-Str(--> Str:D) {
         sprintf 0 <= $!year <= 9999 ?? '%04d' !! '%+05d', $!year;
     }
-
-    # noop for subclasses
-    method !SET-DAYCOUNT() { self }
 
     # shortcut for out of range throwing
     method !oor($what, $got, $range) {

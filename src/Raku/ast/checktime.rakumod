@@ -8,13 +8,6 @@ class RakuAST::CheckTime
     # A list of worries, lazily allocated if there are any.
     has Mu $!worries;
 
-    # Clears any CHECK-time problems that have been produced
-    method clear-check-time-problems() {
-        nqp::bindattr(self, RakuAST::CheckTime, '$!sorries', Mu);
-        nqp::bindattr(self, RakuAST::CheckTime, '$!worries', Mu);
-        Nil
-    }
-
     # Returns True if any check-time problems (sorries or worries) have been
     # identified, and False otherwise.
     method has-check-time-problems() {
@@ -65,6 +58,11 @@ class RakuAST::CheckTime
         for $!worries {
             nqp::push($!sorries, $_);
         }
+        nqp::bindattr(self, RakuAST::CheckTime, '$!worries', []);
+    }
+
+    # Called when no worries is active in our lexical scope.
+    method clear-worries() {
         nqp::bindattr(self, RakuAST::CheckTime, '$!worries', []);
     }
 

@@ -1,3 +1,207 @@
+New in 2025.03:
+
++ Improvements:
+    + Make sure grammar changes persist in the REPL [70872b98]
+    + Allow multi-line comments in REPL as well [3ee9c20b]
+    + Align bytecode part of precomp files to 8 bytes [ecfc3a8e]
+    + Allow Mu:U as synonym for Mu in testing signatures [02ce95d9]
+    + Show initial memory values with _ between thousands [f7023342]
+    + Add support for type-smileys in .assuming [c9c2ca45]
+    + Use less confusing "private" class names [fed35e57]
+    + Update leap second date adding logic [ab04e6b6]
+    + Make sure that .head/first/head() on natives are "raw" [19f77e30]
+    + Expand Hash parameterization [bc057031]
+    + Make sure Hash/::Typed/::Object take same parameterization [9fe52a1d]
+    + Restore the old implementation of .assuming [eb2315f1]
+    + Wrap enum value stringification in a quietly [a36de41a]
+    + throw X::Parameter::TypedSlurpy exception, pass two test in t/spec/S06-signature/slurpy-params.t
+    + Hopefully reduce BUILDALL -> POPULATE confusion [0adcacd4]
+    + Make test always work [f9dd3165]
+    + throw X::Attribute::Undeclared, pass the test of "class D { method d { $!e = 1 }};" (#5820) [9f58a342]
+    + throw X::Parameter::TypedSlurpy exception, pass two test in t/spec/S06-signature/slurpy-params.t (#5818) [518596b4]
+
++ Additions:
+    + Add Range.min/max(:k,:kv,:p) support [b6eed683]
+    + Add === candidate for type objects [3f6ac5a2]
+    + add X::Parameter::WrongOrder exception to wrong order parameters [f0913170]
+    + add redeclaration exception of placeholder parameter [1d082963]
+    + add X::Parameter::Default::TypeCheck exception to parameters [9713c41f]
+    + Add a tip to MethodNotFound logic for !cursor_start [cbc29eee]
+    + Add a missing proto to WhateverCode.POSITIONS [86ece4dd]
+    + Add variable name if possible to warning about use of uninitialized numeric [fc4811a2]
+    + Add missing .Numeric to infix % [0730199b]
+
++ Fixes:
+    + Use proper typechecks in .assuming logic [aff6eaf3]
+    + Make min/max(Range) do the right thing [2d6dd3e3]
+    + Fix object in QAST::WVal, but not in SC for named parameter default types [a83a0fb7]
+    + Don't try to lower signatures with parametric generic types (#5804) [0bcab7a8]
+    + Fix snapper's memory reporting on MacOS [d02733a4]
+    + Make sure that sub-signatures with returns work ok [3bbb521a]
+    + Preliminary fix for .assuming producing typed slurpies [729d26ea]
+    + Fix wrong sigil in orelse's signature [21e52bcf]
+    + Fix accidental execution of stub code when trying to report will phaser NYI [085953b8]
+    + Fix Buf/Blob.join/raku for uints [01369236]
+    + A bunch of Undeclared Attribute check fixes. [7c62a5ad]
+
++ Internal:
+    + Simplify solution for #2245 [d3a1fb64]
+    + This module is explicitly skipped by blin [a70fbf6f]
+    + Skip multislice array test for now [03372894]
+    + Mark failing test as todo for now [8475b1d6]
+    + Remove special casing in implementation-detail test [69d4fcb4]
+    + Remove leap second check step from release process [ee28391b]
+
++ RakuAST Development:
+    + 293 commits, 143/153 (make test), and 1298/1355 (make spectest)
+      [e1068233][e45e4de0][6a5d53e7][2383a90f][2fdd3418][ede438ef][ea20517e]
+      [34d9f24c][68eac4d7][1505faae][080e71f3][d5fb927c][e3926908][37b45597]
+      [7940f6d8][4dde69f9][3610e7ab][0efea1f1][4067f6f6][58d92351][0492be40]
+      [6535f2df][8dfdb413][0ac3fa38][700d34cd][9afde807][725b7b3d][bc286f26]
+      [3f090dc2][88f26e9c][9e5f7f97][aa157805][56e26ea2][e3ac543e][394b19da]
+      [df08bdd8][fdacf483][e5b214fc][3b48f42b][55e48af9][c1ad0834][7b7b450a]
+      [2a09cb01][2db41c00][2ad1b62e][b0e2485e][e0348d46][8153124e][9f070607]
+      [26139a59][b082c4c5][3cd28fa7][dcec2696][b06bd813][101f5055][84ef3bbb]
+      [8f532679][5c352223][089fe248][8c6284b3][a2c554e3][f5aa9fbc][dc8dce73]
+      [ca3c621a][5b7650c0][78d9bf5d][324fd382][b5ea8bd3][5c43bc69][bfb070a7]
+      [e0aaadf1][2493f333][b8ae70ef][6539e984][ad746c66][47f8008f][9354366c]
+      [507172d6][dfcf45b8][4de2d230][100af6aa][34a75063][224c8558][0f008a44]
+      [83cac059][24bde349][b5a684d7][07514a57][e84b3efa][fecb520d][6256ce02]
+      [2522225b][b038ec7a][5cf5b2d5][4342c70b][250c48e0][5ee7e4aa][8f0d6636]
+      [d86d1828][ef0174bb][7f1c8c69][a30c9187][9182b24d][142dee78][75deae59]
+      [e5f44f4e][26dd607f][1847c13f][c8cc26ad][188c9f71][6084eb2f][00a93bf8]
+      [f8b15dcc][8faa16a5][3d651c2e][8026638f][1f958343][79175d2c][fe3bc9d1]
+      [fe1a0f5c][df73f8d1][b3546fe5][339ee649][bb1737fc][3b020e9c][a343c414]
+      [e84e7a94][ac06d7be][d9b7d43b][0494de12][19c4cfef][8a5a40e1][e76deb89]
+      [812c7ec7][d7739900][adae9562][42d49a97][19fe3780][49da3628][3a6c59c0]
+      [7cba23e3][15e4299a][e2ec3a2d][d6d38595][1132925e][1fd7db7f][672126d4]
+      [4ee9503b][0cd87d3e][7b093be2][c77434ad][70fd1bfa][6224971e][45c4f74f]
+      [fa865469][9f1fff2f][7f6af8e4][c1eead87][f40b747a][1a6bca62][da6c8e36]
+      [c6e0a648][c9423ed2][068f564c][7addb39d][7d480094][0a4260b3][cb0a4931]
+      [cb524918][b707a437][4a8ee5d2][9bb1fc7d][490a23b0][170711bd][1a1aa92f]
+      [8d62f88d][291a6140][b34d0f08][dcda59c7][c49eb0ad][404dbbc3][42e90dd1]
+      [25f6cf0a][35bf71cf][377272b6][f826e72d][4566fe62][d37ce2b0][b3870f8a]
+      [f3bcbc0e][ad751d98][1bf36149][86cb1ff5][b5473de2][075d223b][9610e561]
+      [4cb9daf8][c1378a28][c8fb6902][584ea0ff][63a4ba3f][f8a30b29][38058904]
+      [f3f31de6][b12b45b5][d02dd8e3][c13e18b9][c974c646][668ee6c1][242f69bf]
+      [7566dd3b][a7717ce9][51d403a5][004c6521][49c110f4][88566130][4ede82f6]
+      [f20251a5][cbccee08][26a9c1a7][02e32a22][773f9b97][ee50ab5b][c5fa7bb3]
+      [fba808c2][f646c5a2][69dc86fa][a2f7c1aa][b6346aad][cc2e9419][507584f3]
+      [d1466f73][ef38f301][9d7abd04][c2282618][cca6be66][7b4ba29c][57fcb1f1]
+      [90d8e011][1d32d902][bcff40fc][c6e150a7][dfaa9684][448d1bcb][09f0c2b7]
+      [004fd130][c53e470f][dc70e35d][02b208f9][fce3590f][dcb544ad][7ab1a0c9]
+      [b61bfeb5][9831e5cb][e2eba0f9][55c12bb8][8cfbd818][549f71c1][d4cab4df]
+      [05283093][fe32fafc][8cf2fcca][493d2365][2856fc81][2e637594][bc37a2a9]
+      [34fc932e][a213ee72][cbc4af86][5386a7a2][6e9504e3][0e1c6476][dc4e30ce]
+      [8f268d29][6c791595][7476648e][a4c3ed56][c19be7ee][8fbe800e][f7f670f3]
+      [9b95ab96][915c8def][f3ae9c38][b801bb5b][c7cfbfca][7826a767][0fb4b32a]
+      [91c98a2e][dc47d51c][0ab88eec][2a6f1822][e524c043][a630609d]
+
+New in 2025.02:
+
++ Improvements:
+    + Make iterating Map/Hash ~1% faster [0a708114]
+    + Make Map|Hash.new( a => 42, b => 666) more DWIM [ddf07343]
+    + Make Instant.DateTime timezone aware in 6.e [e4157a41]
+    + Properly revision gate Date.DateTime [80c21053]
+    + Make Int.uniname return Failure on unassigned in 6.e [3b8e5094]
+    + Allow heredocs in the REPL [f8556044]
+    + Make Blob ~ Blobx take lefthand type in 6.e [abb92d96]
+    + Handle Associative.deepmap better wrt Empty [6e982323][ab09c6d1]
+
++ Additions:
+    + Introduce Hash::Ordered [1faf1148]
+    + Add support for 0 in .rotor [2ab1e918]
+
++ Fixes:
+    + Make Hash.clone actually clone itself [6be81c7c]
+    + Make Hash/Map.clone multis [ce58f97d]
+    + Make Array.clone actually clone itself [4c7f00ba][997ca6a4][45ae5b94]
+    + Make sure cloning a Date works for subclasses [4b95276c]
+    + Fix issue with Date.today and Date.clone [6aa68f98]
+    + Make DateTime.clone do the right thing for subclasses/mixedins [b1ce6561]
+    + A group of fixes and improvements for metaops related to #1705 [2a70fa43]
+      [27d1ee7f][c890ea59][399fea1d][88050372][b7f47a2a][ba2431f4][dbc7bfc8]
+      [9bcb01e9][b2198d9e][1aea298d]
+    + Give Hash.clone the same semantics as Array.clone [4f8cfb12]
+    + Give Hash::Object.clone the same semantics as Array.clone [72e2dcd1]
+    + Throw coercion failures on object hashes [9ece34b2]
+    + Native array .head/.first/.tail are left values [de08b4c6]
+    + Make $() work properly on scalar values [553bd756][a6608c21]
+    + Make sure result of >>foo<< is stored correctly [ad18ca9f]
+    + Make sure that .deepmap returns the right structure [a6d76f8c]
+    + Handle single param to named array args better in MAIN [4a63e5c3]
+    + Fix multi-dim array slices with lazy indices in 6.e [c151ca37]
+    + Make Range.Numeric a bit smarter wrt infinity [90312db3]
+    + Revert "Don't allow \c[] with multiple graphemes in regex" [0bfbf5fa]
+
++ Deprecations:
+    + Deprecate IO subs that operate on multiple paths in 6.e [cd34688a]
+
++ Internal:
+    + Simplify Mu.clone [39c48a17]
+    + Remove SET-DAYCOUNT private method [19d53f53]
+    + Lose Positional argument to BUILDALL [ea1831c7]
+    + Simplify Supplier creation [b971e443]
+    + Use POPULATE interface for Backtrace::Frame [a605fed9]
+    + Use POPULATE interface on MoarVM::Profiler [2735e95f]
+    + Simplify Hash/Map.new [e6f0771a]
+    + Remove now unnecessary .item methods [e34b767f]
+    + Add shortcut for (1,2,3).are(Mu) [248f02ba]
+    + Use a local for a somewhat hot class member access [02c43edc]
+    + More locals instead of class members [99500a5d]
+    + Mark '.samespace' method as an implementation-detail [ef60266a]
+    + Word wrap class implementation detail message [45b36fa0]
+
++ RakuAST Development:
+    + 60 commits, 142/153 (make test), and 1189/1355 (make spectest)
+      [c26e7af3][a9bce4d5][d77a3bd9][9a96e8b2][e1b9fd83][66de0b44][50d8725a]
+      [1a56f5b2][d2ad724f][19770e45][77631d9b][99433304][045c280f][a440fb84]
+      [5712c53e][91e767b2][d244790b][8e095d04][318b1231][5cdf9056][874250cd]
+      [0da7a67d][f00e5edf][cd2ed227][6922f88f][204a8379][698c5861][174729f9]
+      [138ba249][cb109349][4e919342][a85cc7a4][5a90058e][c02df2df][ca07de87]
+      [138ec396][14a9bd0a][4d37905d][a56f1b57][8835a438][a0579b9b][65b2056e]
+      [60a2d44b][1aa763f0][8ead6206][7daa644a][10040b98][5807369f][8b60dc26]
+      [243e2939][f5e82265][fc3fca45][62b8a649][1665ac0f][cd0fd56d][83694c05]
+      [1f8f25f0][b6447578][4e811d55][1a6fe31c]
+
+New in 2025.01:
+
++ Improvements:
+    + Add lower-bounding for the revision-gated trait [7c7ad5bd][0e9a2d73]
+    + Pod::To::Text: Sort enum pairs by value [c7004109]
+    + Improve throughput and reliability of CI::PrecompilationRepository [b6242f4b][4919b647]
+    + Get PRs working for everyone [b6ea5783]
+    + Make native arrays Cool (e.g. allow native arrays to be
+      endpoints for Ranges [17fe51b8][8f38af87]
+    + Add proper support for regexes to multi-needle .split [77c4c64e][bea1f099]
+    + Final step of re-imaginining .trans [d7feae2f][e5a715ab][bcd7beaf][f055c31e]
+    + Update documentation of recently added syscalls [3265ff3b]
+    + Optimize Str.(words|lines) [603b07ac]
+
++ Additions:
+    + Add VM.ownup to produce backtraces of all threads and exit [7ef44ef5][70d66b98]
+    + Provide adverbial forms of map [24b4001e][720cd014]
+
++ Fixes:
+    + Fix obsolete reference to CompUnit::PrecompilationStore::File [b2dd1185]
+    + Make sure strarray.raku doesn't die [c0c2e01f]
+    + Move precomp docker host ubuntu 24.04 -> 20.04 [eba9332d]
+    + Use .raku suffix in doc of install-dist instead of .p6 [a66b2e16]
+
++ Internal:
+    + Run full spectest in CI (#5747) [ebecbeaf]
+    + Remove unnecessary stubs [3559bb9b]
+    + Move test file that dies on JVM to t/09-moar [4aa8d331]
+    + [JVM] Add extra check for GLOBAL being null (#5710) [e7f9223c]
+    + [JVM] Reduce backend-specific code in find_best_dispatchee (#5714) [8991173f]
+    + Remove playful "just yet" in error messages [87f0e37f]
+    + Remove now unnecessary R:I:ALL_TYPE method [26fbd4c3]
+    + Only call ensure-sc if there is a descriptor [70c268ba]
+
++ RakuAST Development:
+    + Make  A, P, and Δ = Capital Greek Delta) produce AST like markup X [f57a989a]
+
 New in 2024.12:
 
 + Improvements:

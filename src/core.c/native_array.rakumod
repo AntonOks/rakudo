@@ -122,7 +122,7 @@ my class array is Cool does Iterable does Positional {
 
     role strarray[::T] does Positional[T] is array_type(T) {
 #- start of generated part of strarray role -----------------------------------
-#- Generated on 2022-05-21T12:11:45+02:00 by tools/build/makeNATIVE_ARRAY.raku
+#- Generated on 2025-03-19T12:20:30+01:00 by tools/build/makeNATIVE_ARRAY.raku
 #- PLEASE DON'T CHANGE ANYTHING BELOW THIS LINE
 
         multi method grep(strarray:D: Str:D $needle, :$k, :$kv, :$p, :$v --> Seq:D) {
@@ -172,11 +172,14 @@ my class array is Cool does Iterable does Positional {
             $result.Seq
         }
 
-        multi method head(strarray:D:) {
-            nqp::atpos_s(self,0)
+        multi method head(strarray:D:) is raw {
+            nqp::atposref_s(self,0)
         }
-        multi method tail(strarray:D:) {
-            nqp::atpos_s(self,nqp::sub_i(nqp::elems(self),1))
+        multi method tail(strarray:D:) is raw {
+            nqp::atposref_s(self,nqp::sub_i(nqp::elems(self),1))
+        }
+        multi method first(strarray:D:) is raw {
+            nqp::atposref_s(self,0)
         }
         multi method first(strarray:D: Str:D $needle, :$k, :$kv, :$p, :$v) {
             my int  $i     = -1;
@@ -745,7 +748,7 @@ my class array is Cool does Iterable does Positional {
 
     role intarray[::T] does Positional[T] is array_type(T) {
 #- start of generated part of intarray role -----------------------------------
-#- Generated on 2022-05-21T12:11:45+02:00 by tools/build/makeNATIVE_ARRAY.raku
+#- Generated on 2025-03-19T12:20:30+01:00 by tools/build/makeNATIVE_ARRAY.raku
 #- PLEASE DON'T CHANGE ANYTHING BELOW THIS LINE
 
         multi method grep(intarray:D: Int:D $needle, :$k, :$kv, :$p, :$v --> Seq:D) {
@@ -795,11 +798,14 @@ my class array is Cool does Iterable does Positional {
             $result.Seq
         }
 
-        multi method head(intarray:D:) {
-            nqp::atpos_i(self,0)
+        multi method head(intarray:D:) is raw {
+            nqp::atposref_i(self,0)
         }
-        multi method tail(intarray:D:) {
-            nqp::atpos_i(self,nqp::sub_i(nqp::elems(self),1))
+        multi method tail(intarray:D:) is raw {
+            nqp::atposref_i(self,nqp::sub_i(nqp::elems(self),1))
+        }
+        multi method first(intarray:D:) is raw {
+            nqp::atposref_i(self,0)
         }
         multi method first(intarray:D: Int:D $needle, :$k, :$kv, :$p, :$v) {
             my int  $i     = -1;
@@ -1410,7 +1416,7 @@ my class array is Cool does Iterable does Positional {
 
     role uintarray[::T] does Positional[T] is array_type(T) {
 #- start of generated part of uintarray role -----------------------------------
-#- Generated on 2022-05-21T12:11:45+02:00 by tools/build/makeNATIVE_ARRAY.raku
+#- Generated on 2025-03-19T12:20:30+01:00 by tools/build/makeNATIVE_ARRAY.raku
 #- PLEASE DON'T CHANGE ANYTHING BELOW THIS LINE
 
         multi method grep(uintarray:D: Int:D $needle, :$k, :$kv, :$p, :$v --> Seq:D) {
@@ -1460,11 +1466,14 @@ my class array is Cool does Iterable does Positional {
             $result.Seq
         }
 
-        multi method head(uintarray:D:) {
-            nqp::atpos_u(self,0)
+        multi method head(uintarray:D:) is raw {
+            nqp::atposref_u(self,0)
         }
-        multi method tail(uintarray:D:) {
-            nqp::atpos_u(self,nqp::sub_i(nqp::elems(self),1))
+        multi method tail(uintarray:D:) is raw {
+            nqp::atposref_u(self,nqp::sub_i(nqp::elems(self),1))
+        }
+        multi method first(uintarray:D:) is raw {
+            nqp::atposref_u(self,0)
         }
         multi method first(uintarray:D: Int:D $needle, :$k, :$kv, :$p, :$v) {
             my int  $i     = -1;
@@ -2075,7 +2084,7 @@ my class array is Cool does Iterable does Positional {
 
     role numarray[::T] does Positional[T] is array_type(T) {
 #- start of generated part of numarray role -----------------------------------
-#- Generated on 2022-05-21T12:11:45+02:00 by tools/build/makeNATIVE_ARRAY.raku
+#- Generated on 2025-03-19T12:20:30+01:00 by tools/build/makeNATIVE_ARRAY.raku
 #- PLEASE DON'T CHANGE ANYTHING BELOW THIS LINE
 
         multi method grep(numarray:D: Num:D $needle, :$k, :$kv, :$p, :$v --> Seq:D) {
@@ -2125,11 +2134,14 @@ my class array is Cool does Iterable does Positional {
             $result.Seq
         }
 
-        multi method head(numarray:D:) {
-            nqp::atpos_n(self,0)
+        multi method head(numarray:D:) is raw {
+            nqp::atposref_n(self,0)
         }
-        multi method tail(numarray:D:) {
-            nqp::atpos_n(self,nqp::sub_i(nqp::elems(self),1))
+        multi method tail(numarray:D:) is raw {
+            nqp::atposref_n(self,nqp::sub_i(nqp::elems(self),1))
+        }
+        multi method first(numarray:D:) is raw {
+            nqp::atposref_n(self,0)
         }
         multi method first(numarray:D: Num:D $needle, :$k, :$kv, :$p, :$v) {
             my int  $i     = -1;
@@ -4761,7 +4773,7 @@ my class array is Cool does Iterable does Positional {
 
     method ^parameterize(Mu:U \arr, Mu \t) {
         if nqp::isconcrete(t) {
-            return "Can not parameterize {arr.^name} with {t.raku}";
+            die "Can not parameterize {arr.^name} with {t.raku}";
         }
         my $t := nqp::decont(t);
         my int $kind = nqp::objprimspec($t);
@@ -4783,7 +4795,7 @@ my class array is Cool does Iterable does Positional {
             $what := arr.^mixin(uintarray[$t]);
         }
         else {
-            return "Can only parameterize array with a native type, not {t.^name}";
+            die "Can only parameterize array with a native type, not {t.^name}";
         }
 
         $what.^set_name("{arr.^name}[{t.^name}]");

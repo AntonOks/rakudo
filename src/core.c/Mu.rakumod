@@ -94,7 +94,7 @@ my class Mu { # declared in BOOTSTRAP
                 my $what;
                 my $where;
                 if nqp::isconcrete(object) && nqp::can(object,"name") {
-                    $what  := object.name;
+                    $what  := object.name || ('this nameless ' ~ (object.^name ~~ /^ \w+ /).lc);
                     $where := "routine/$what".subst('<', '&lt;', :g).subst('>', '&gt;', :g);
                 }
                 else {
@@ -140,8 +140,8 @@ my class Mu { # declared in BOOTSTRAP
         my Mu $obj := self;
         my $bless := nqp::tryfindmethod(self,'bless');
         nqp::eqaddr($bless, nqp::findmethod(Mu,'bless'))
-                ?? nqp::create(self).BUILDALL(Empty, %attrinit)
-                !! $bless(self,|%attrinit)
+          ?? nqp::create(self).POPULATE(%attrinit)
+          !! $bless(self,|%attrinit)
     }
     multi method new($, *@) {
         X::Constructor::Positional.new(:type( self )).throw();
@@ -155,10 +155,21 @@ my class Mu { # declared in BOOTSTRAP
     }
 
     method bless(*%attrinit) {
-        nqp::create(self).BUILDALL(Empty, %attrinit);
+        nqp::create(self).POPULATE(%attrinit);
     }
 
-    method BUILDALL(Mu:D: @autovivs, %attrinit) {
+    # This is the interface of old to object instantiation from an era
+    # when there was it was considered to have some automatic handling
+    # of positional arguments to .new.  This idea has long been abandoned
+    # since then, but the Positional interface was still part of every
+    # object instantiation.  The POPULATE method removes that Positional
+    # argument.  This method is now just a shim around POPULATE to allow
+    # modules that use the old interface (such as Inline::Perl5) to
+    # continue to work unchanged.
+    method BUILDALL(Mu:D: @auto, %attrinit) {
+        self.POPULATE(%attrinit)
+    }
+    method POPULATE(Mu:D: %attrinit) {
         my $init := nqp::getattr(%attrinit,Map,'$!storage');
         # Get the build plan. Note that we do this "low level" to
         # avoid the NQP type getting mapped to a Rakudo one, which
@@ -777,25 +788,31 @@ my class Mu { # declared in BOOTSTRAP
 
     proto method Numeric(|) {*}
     multi method Numeric(Mu:U \v:) {
-        warn "Use of uninitialized value of type {self.^name} in numeric context";
+        my $name = (defined($*VAR_NAME) ?? $*VAR_NAME !! try v.VAR.name) // '';
+        $name    = " $name" if $name;
+        warn "Use of uninitialized value$name of type {self.^name} in numeric context";
         0
     }
     proto method Real(|) {*}
     multi method Real(Mu:U \v:) {
-        warn "Use of uninitialized value of type {self.^name} in numeric context";
+        my $name = (defined($*VAR_NAME) ?? $*VAR_NAME !! try v.VAR.name) // '';
+        $name    = " $name" if $name;
+        warn "Use of uninitialized value$name of type {self.^name} in numeric context";
         0
     }
     proto method Int(|) {*}
     multi method Int(Mu:U \v:) {
-        warn "Use of uninitialized value of type {self.^name} in numeric context";
+        my $name = (defined($*VAR_NAME) ?? $*VAR_NAME !! try v.VAR.name) // '';
+        $name    = " $name" if $name;
+        warn "Use of uninitialized value$name of type {self.^name} in numeric context";
         0
     }
 
     proto method Str(|) {*}
     multi method Str(Mu:U \v:) {
         my $name = (defined($*VAR_NAME) ?? $*VAR_NAME !! try v.VAR.name) // '';
-        $name   ~= ' ' if $name ne '';
-        warn "Use of uninitialized value {$name}of type {self.^name} in string"
+        $name    = " $name" if $name;
+        warn "Use of uninitialized value$name of type {self.^name} in string"
                 ~ " context.\nMethods .^name, .raku, .gist, or .say can be"
                 ~ " used to stringify it to something meaningful.";
         ''
@@ -813,7 +830,9 @@ my class Mu { # declared in BOOTSTRAP
     }
     multi method Stringy(Mu:D $:) { self.Str }
 
-    method item(Mu \item:) is raw { item }
+    method item(Mu \item:) is raw {
+        nqp::iscont(item) ?? item !! (my $ = item)
+    }
 
     proto method say(|) {*}
     proto method put(|) {*}
@@ -1060,9 +1079,10 @@ my class Mu { # declared in BOOTSTRAP
     }
 
     proto method clone (|) {*}
-    multi method clone(Mu:U: *%twiddles) {
-        %twiddles and die 'Cannot set attribute values when cloning a type object';
-        self
+    multi method clone(Mu:U:) {
+        %_
+          ?? die('Cannot set attribute values when cloning a type object')
+          !! self
     }
     multi method clone(Mu:D: *%twiddles) {
         my $cloned := nqp::clone(self);

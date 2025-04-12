@@ -304,7 +304,7 @@ augment class RakuAST::Node {
 #- A ---------------------------------------------------------------------------
 
     multi method raku(RakuAST::ApplyInfix:D: --> Str:D) {
-        self!nameds: <left infix right>
+        self!nameds: <left infix right colonpairs>
     }
 
     multi method raku(RakuAST::ApplyDottyInfix:D: --> Str:D) {
@@ -394,6 +394,10 @@ augment class RakuAST::Node {
     }
 
 #- ColonPair -------------------------------------------------------------------
+
+    multi method raku(RakuAST::ColonPairs:D: --> Str:D) {
+        self!positionals(self.colonpairs)
+    }
 
     multi method raku(RakuAST::ColonPair::False:D: --> Str:D) {
         self!literal(self.key)
@@ -1222,7 +1226,7 @@ augment class RakuAST::Node {
     }
 
     multi method raku(RakuAST::Var::Attribute::Public:D: --> Str:D) {
-        self!positional(self.name)
+        self!nameds: <name args>
     }
 
     multi method raku(RakuAST::Var::Compiler::File:D: --> Str:D) {

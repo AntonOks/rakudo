@@ -177,6 +177,15 @@ augment class RakuAST::Node {
             }).head
         }
     }
+
+    method parent(int $generation?) {
+        with @*LINEAGE {
+            $_[$generation] // Nil
+        }
+        else {
+            Nil
+        }
+    }
 }
 
 my class RakuAST::Doc::LegacyRow is RakuAST::Node {
@@ -1470,6 +1479,18 @@ augment class RakuAST::Doc::Declarator {
                    !! ''
                }).List
              )
+    }
+}
+
+augment class RakuAST::Postfix::Power {
+
+    # Helper method to interprete a match object with an expression
+    # in supercript codepoints using val() semantics
+    method from-superscripts(Mu $/) {
+        self.new:
+          val(
+            nqp::hllize($/).Str.trans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺ⁱ" => "0123456789-+i")
+          ).Numeric
     }
 }
 

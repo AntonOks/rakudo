@@ -10,7 +10,7 @@ class RakuAST::Var::Lexical
   is RakuAST::Var
   is RakuAST::Lookup
   is RakuAST::ParseTime
-  is RakuAST::CheckTime
+  is RakuAST::Sinkable
 {
     has str $.sigil;
     has str $.twigil;
@@ -62,11 +62,18 @@ class RakuAST::Var::Lexical
                 self.set-resolution($resolved);
             }
         }
+        if self.is-resolved && nqp::istype(self.resolution, RakuAST::VarDeclaration::AttributeAlias) {
+            my $self := RakuAST::Term::Self.new.to-begin-time($resolver, $context);
+            unless $self.is-resolved {
+                self.add-sorry($resolver.build-exception('X::Syntax::NoSelf', :variable(self.name)));
+            }
+        }
+        self.add-sunk-worry($resolver, self.name) if self.sunk;
     }
 
     method undeclared-symbol-details() {
         $!sigil eq '&'
-            ?? RakuAST::UndeclaredSymbolDescription::Routine.new(self.name)
+            ?? RakuAST::UndeclaredSymbolDescription::Routine.new($!desigilname.canonicalize)
             !! Nil
     }
 
@@ -80,10 +87,14 @@ class RakuAST::Var::Lexical
             !! Mu
     }
 
+    method maybe-compile-time-value() {
+        self.resolution.compile-time-value
+    }
+
     method IMPL-IS-META-OP() {
         ($!sigil eq '&' || $!sigil eq '')
-            && nqp::elems($!desigilname.colonpairs) == 1
-            && nqp::istype($!desigilname.colonpairs[0], RakuAST::QuotedString)
+            && (my $cp := $!desigilname.IMPL-UNWRAP-LIST($!desigilname.colonpairs))
+            && nqp::istype($cp[0], RakuAST::QuotedString)
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -228,6 +239,7 @@ class RakuAST::Var::Attribute
   is RakuAST::Var
   is RakuAST::ImplicitLookups
   is RakuAST::BeginTime
+  is RakuAST::CheckTime
 {
     has str $.name;
     has RakuAST::Package $!package;
@@ -241,9 +253,15 @@ class RakuAST::Var::Attribute
     method sigil() { nqp::substr($!name, 0, 1) }
 
     method can-be-bound-to() {
-        my $package := $!package.meta-object;
-        my $attr-type := $package.HOW.get_attribute_for_usage($package, $!name).type;
-        nqp::objprimspec($attr-type) ?? False !! True
+        # stubbed-meta-object gives you the type object without trying to compose it first.
+        my $package := $!package.stubbed-meta-object;
+        if $package.HOW.has_attribute($package, $!name) {
+            my $attr-type := $package.HOW.get_attribute_for_usage($package, $!name).type;
+            return nqp::objprimspec($attr-type) ?? False !! True
+        }
+
+        # Return True so we don't have multi error for a non-existent attribute.
+        True
     }
 
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -260,6 +278,21 @@ class RakuAST::Var::Attribute
         }
     }
 
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # stubbed-meta-object gives you the type object without trying to compose it first.
+        if $!package {
+            my $package := $!package.stubbed-meta-object;
+
+            self.add-sorry: $resolver.build-exception: 'X::Attribute::Undeclared',
+                :symbol($!name), :package-kind($!package.declarator),
+                :package-name($package.HOW.name), :what('attribute')
+                unless $package.HOW.has_attribute($package, $!name);
+        }
+
+        self.add-sorry: $resolver.build-exception: 'X::Syntax::NoSelf', :variable($!name)
+            unless self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].is-resolved;
+    }
+
     method PRODUCE-IMPLICIT-LOOKUPS() {
         self.IMPL-WRAP-LIST([
             RakuAST::Term::Self.new,
@@ -268,7 +301,7 @@ class RakuAST::Var::Attribute
     }
 
     method IMPL-QAST-PACKAGE-LOOKUP(RakuAST::Impl::QASTContext $context) {
-        my $class := self.get-implicit-lookups.AT-POS(1);
+        my $class := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[1];
         if $class.is-resolved
           && nqp::istype($class.resolution, RakuAST::CompileTimeValue) {
             my $type-object := $class.resolution.compile-time-value;
@@ -282,55 +315,66 @@ class RakuAST::Var::Attribute
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         my $package := $!package.meta-object;
-        my $attr-type := $package.HOW.get_attribute_for_usage($package, $!name).type;
-        QAST::Var.new(
-            :scope(nqp::objprimspec($attr-type) ?? 'attributeref' !! 'attribute'),
-            :name($!name), :returns($attr-type),
-            self.get-implicit-lookups.AT-POS(0).IMPL-TO-QAST($context),
-            self.IMPL-QAST-PACKAGE-LOOKUP($context),
-        )
+        if $package.HOW.has_attribute($package, $!name) {
+            my $attr-type := $package.HOW.get_attribute_for_usage($package, $!name).type;
+            return QAST::Var.new(
+                :scope(nqp::objprimspec($attr-type) ?? 'attributeref' !! 'attribute'),
+                :name($!name), :returns($attr-type),
+                self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].IMPL-TO-QAST($context),
+                self.IMPL-QAST-PACKAGE-LOOKUP($context)
+            )
+        }
+        QAST::Op.new(:op<null>)
     }
 
     method IMPL-BIND-QAST(RakuAST::IMPL::QASTContext $context, QAST::Node $source-qast) {
         my $package := $!package.meta-object;
-        my $attr-type := $package.HOW.get_attribute_for_usage($package, $!name).type;
-        unless nqp::eqaddr($attr-type, Mu) {
-            $context.ensure-sc($attr-type);
-            $source-qast := QAST::Op.new(
-                :op('p6bindassert'),
-                $source-qast,
-                QAST::WVal.new( :value($attr-type) )
-            );
+        if $package.HOW.has_attribute($package, $!name) {
+            my $attr-type := $package.HOW.get_attribute_for_usage($package, $!name).type;
+            unless nqp::eqaddr($attr-type, Mu) {
+                $context.ensure-sc($attr-type);
+                $source-qast := QAST::Op.new(
+                    :op('p6bindassert'),
+                    $source-qast,
+                    QAST::WVal.new( :value($attr-type) )
+                );
+            }
+            return QAST::Op.new(
+                :op('bind'),
+                QAST::Var.new(
+                    :scope('attribute'), :name($!name), :returns($attr-type),
+                    self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].IMPL-TO-QAST($context),
+                    self.IMPL-QAST-PACKAGE-LOOKUP($context)
+                ),
+                $source-qast
+            )
         }
-        QAST::Op.new(
-            :op('bind'),
-            QAST::Var.new(
-                :scope('attribute'), :name($!name), :returns($attr-type),
-                self.get-implicit-lookups.AT-POS(0).IMPL-TO-QAST($context),
-                self.IMPL-QAST-PACKAGE-LOOKUP($context),
-            ),
-            $source-qast
-        )
+        QAST::Op.new(:op<null>)
     }
 }
 
 # Wrapper for $.foo "attribute" accesses
 class RakuAST::Var::Attribute::Public
-  is RakuAST::Node
+  is RakuAST::Term
 {
     has str                   $.name;
     has RakuAST::ApplyPostfix $!expression;
 
-    method new(str $name) {
+    # Did we already get our args replaced once?
+    # Important so we don't swallow call chains like $.foo()(1)
+    has Bool $.has-args;
+
+    method new(str :$name, RakuAST::ArgList :$args) {
         my str $sigil := nqp::substr($name,0,1);
 
         my $obj := nqp::create(self);
         nqp::bindattr_s($obj, RakuAST::Var::Attribute::Public, '$!name', $name);
+        nqp::bindattr($obj, RakuAST::Var::Attribute::Public, '$!has-args', False);
         nqp::bindattr(  $obj, RakuAST::Var::Attribute::Public, '$!expression',
           # self.foo.item
           RakuAST::ApplyPostfix.new(
             operand => RakuAST::ApplyPostfix.new(
-              operand => RakuAST::Term::Self.new,
+              operand => RakuAST::Term::Self.new(:variable($obj)),
               postfix => RakuAST::Call::Method.new(
                 name => RakuAST::Name.from-identifier(nqp::substr($name,2))
               )
@@ -342,6 +386,7 @@ class RakuAST::Var::Attribute::Public
             )
           )
         );
+        $obj.replace-args($args) if $args;
         $obj
     }
 
@@ -349,22 +394,61 @@ class RakuAST::Var::Attribute::Public
         $visitor($!expression);
     }
 
-    method IMPL-TO-QAST(RakuAST::IMPL::QASTContext $context) {
-        $!expression.IMPL-TO-QAST($context)
+    method replace-args(RakuAST::Args $args) {
+        nqp::bindattr(self, RakuAST::Var::Attribute::Public, '$!has-args', True);
+        $!expression.operand.postfix.replace-args($args);
     }
 
-    method IMPL-CURRIED() {
-        $!expression.IMPL-CURRIED()
+    method args() {
+        $!expression.operand.postfix.args
     }
 
-    method IMPL-ADJUST-QAST-FOR-LVALUE(Mu $qast) {
-        $!expression.IMPL-ADJUST-QAST-FOR-LVALUE($qast)
+    method creates-block() {
+        $!expression.creates-block;
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        my $block := $resolver.find-attach-target('block');
+        if nqp::istype($block, RakuAST::Method::Initializer) {
+            self.add-sorry:
+                $resolver.build-exception: 'X::Syntax::VirtualCall', call => $!name;
+            return False;
+        }
+    }
+
+    method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
+        $!expression.IMPL-EXPR-QAST($context)
     }
 }
 
 # The base for special compiler variables ($?FOO).
 class RakuAST::Var::Compiler
   is RakuAST::Var { }
+
+# The $?LANG variable which refers to the cursor at that point of the parse.
+class RakuAST::Var::Compiler::Lang
+  is RakuAST::Var::Compiler
+{
+    has Mu $.cursor;
+
+    method new(Mu $cursor) {
+        my $obj := nqp::create(self);
+        nqp::bindattr($obj, RakuAST::Var::Compiler::Lang, '$!cursor', $cursor);
+        $obj
+    }
+
+    method sigil() { '$' }
+
+    method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
+        my $value := $!cursor;
+        $context.ensure-sc($value);
+        QAST::WVal.new( :$value )
+    }
+
+    method IMPL-CAN-INTERPRET() { True }
+
+    method IMPL-INTERPRET(RakuAST::IMPL::InterpContext $ctx) { $!cursor }
+}
 
 # The $?FILE variable, which is created pre-resolved to a string value.
 class RakuAST::Var::Compiler::File
@@ -454,6 +538,75 @@ class RakuAST::Var::Compiler::Routine
     }
 }
 
+class RakuAST::Var::Compiler::Resources
+  is RakuAST::Var::Compiler
+  is RakuAST::Var::Lexical
+  is RakuAST::ImplicitLookups
+{
+    method new() {
+        my $obj := nqp::create(self);
+        nqp::bindattr_s($obj, RakuAST::Var::Lexical, '$!sigil', '%');
+        nqp::bindattr_s($obj, RakuAST::Var::Lexical, '$!twigil', '?');
+        nqp::bindattr($obj, RakuAST::Var::Lexical, '$!desigilname', RakuAST::Name.from-identifier('RESOURCES'));
+        $obj
+    }
+
+    method PRODUCE-IMPLICIT-LOOKUPS() {
+        self.IMPL-WRAP-LIST([
+            RakuAST::Type::Setting.new(RakuAST::Name.from-identifier-parts('Distribution', 'Resources')),
+        ])
+    }
+
+    method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
+        my $resources := nqp::getlexdyn('$*RESOURCES');
+        unless $resources {
+            my $Resources := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.compile-time-value;
+            $resources := $Resources.from-precomp();
+        }
+        if $resources {
+            $context.ensure-sc($resources);
+            QAST::WVal.new( :value($resources) );
+        }
+        else {
+            QAST::WVal.new( :value(Nil) );
+        }
+    }
+}
+
+class RakuAST::Var::Compiler::Distribution
+  is RakuAST::Var::Compiler
+  is RakuAST::Var::Lexical
+  is RakuAST::ImplicitLookups
+{
+    method new() {
+        my $obj := nqp::create(self);
+        nqp::bindattr_s($obj, RakuAST::Var::Lexical, '$!sigil', '$');
+        nqp::bindattr_s($obj, RakuAST::Var::Lexical, '$!twigil', '?');
+        nqp::bindattr($obj, RakuAST::Var::Lexical, '$!desigilname', RakuAST::Name.from-identifier('DISTRIBUTION'));
+        $obj
+    }
+
+    method PRODUCE-IMPLICIT-LOOKUPS() {
+        self.IMPL-WRAP-LIST([
+            RakuAST::Type::Setting.new(RakuAST::Name.from-identifier-parts('CompUnit', 'Repository', 'Distribution')),
+        ])
+    }
+
+    method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
+        my $distribution := nqp::getlexdyn('$*DISTRIBUTION');
+        unless $distribution {
+            my $Distribution := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.compile-time-value;
+            $distribution := $Distribution.from-precomp();
+        }
+        if $distribution {
+            $context.ensure-sc($distribution);
+            QAST::WVal.new( :value($distribution) );
+        }
+        else {
+            QAST::WVal.new( :value(Nil) );
+        }
+    }
+}
 
 # A special compiler variable that resolves to a lookup, such as $?PACKAGE.
 class RakuAST::Var::Compiler::Lookup
@@ -523,13 +676,13 @@ class RakuAST::Var::PositionalCapture
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
-        my $lookups := self.get-implicit-lookups;
+        my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
         my $index := $!index;
         $context.ensure-sc($index);
         QAST::Op.new(
             :op('call'),
-            :name($lookups.AT-POS(0).resolution.lexical-name),
-            $lookups.AT-POS(1).IMPL-TO-QAST($context),
+            :name($lookups[0].is-resolved ?? $lookups[0].resolution.lexical-name !! '&postcircumfix:<[ ]>'),
+            $lookups[1].IMPL-TO-QAST($context),
             QAST::WVal.new( :value($index) )
         )
     }
@@ -556,11 +709,11 @@ class RakuAST::Var::NamedCapture
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
-        my $lookups := self.get-implicit-lookups;
+        my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
         my $op := QAST::Op.new(
             :op('call'),
-            :name($lookups.AT-POS(0).resolution.lexical-name),
-            $lookups.AT-POS(1).IMPL-TO-QAST($context),
+            :name($lookups[0].resolution.lexical-name),
+            $lookups[1].IMPL-TO-QAST($context),
         );
         $op.push($!index.IMPL-TO-QAST($context)) unless $!index.is-empty-words;
         $op
@@ -576,6 +729,7 @@ class RakuAST::Var::Package
   is RakuAST::Var
   is RakuAST::Lookup
   is RakuAST::ParseTime
+  is RakuAST::CheckTime
 {
     has str $.sigil;
     has RakuAST::Name $.name;
@@ -600,12 +754,21 @@ class RakuAST::Var::Package
     }
 
     method PERFORM-PARSE(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
-        my @parts := self.IMPL-UNWRAP-LIST($!name.parts);
-        my $resolved := $resolver.resolve-name(RakuAST::Name.new(@parts[0]));
+        my $resolved := $resolver.resolve-name(RakuAST::Name.new($!name.root-part))
+            unless $!name.is-empty || nqp::istype($!name.root-part, RakuAST::Name::Part::Empty);
         if $resolved {
             self.set-resolution($resolved);
         }
         Nil
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        if !self.is-resolved && ($!name.is-empty || $!name.is-anonymous) {
+            my $name := $!name.canonicalize;
+            self.add-sorry:
+                $resolver.build-exception: 'X::Undeclared', :symbol($!sigil ~ $name),
+                    :suggestions($resolver.suggest-lexicals($name));
+        }
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -682,7 +845,7 @@ class RakuAST::Var::Slang
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         my $qast := QAST::Op.new(
-            :op<callmethod>, :name<new>, :returns(self.get-implicit-lookups.AT-POS(1)),
+            :op<callmethod>, :name<new>, :returns(self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.compile-time-value),
             QAST::Var.new( :name<Slang>, :scope<lexical> ));
         my $g := $!grammar;
         $context.ensure-sc($g);

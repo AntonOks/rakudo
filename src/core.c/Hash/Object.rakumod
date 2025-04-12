@@ -1,10 +1,11 @@
-my role Hash::Object[::TValue, ::TKey] does Associative[TValue] {
+my role Hash::Object[::TValue, ::TKey, ::TDefault = TValue]
+  does Associative[TValue] {
 
     # make sure we get the right descriptor
     multi method new(::?CLASS:) {
         nqp::p6bindattrinvres(
           nqp::create(self),Hash,'$!descriptor',
-          ContainerDescriptor.new(:of(TValue), :default(TValue))
+          ContainerDescriptor.new(:of(TValue), :default(TDefault))
         )
     }
     method keyof () { TKey }
@@ -22,15 +23,17 @@ my role Hash::Object[::TValue, ::TKey] does Associative[TValue] {
     }
 
     method STORE_AT_KEY(::?CLASS:D: TKey \key, Mu \value --> Nil) {
-        nqp::bindkey(
-          nqp::getattr(self,Map,'$!storage'),
-          nqp::unbox_s(key.WHICH),
-          Pair.new(
-            key,
-            nqp::p6scalarfromdesc(nqp::getattr(self,Hash,'$!descriptor'))
-            = value
-          )
-        )
+        nqp::istype(key,Failure)
+          ?? key.throw
+          !! nqp::bindkey(
+               nqp::getattr(self,Map,'$!storage'),
+               nqp::unbox_s(key.WHICH),
+               Pair.new(
+                 key,
+                 nqp::p6scalarfromdesc(nqp::getattr(self,Hash,'$!descriptor'))
+                 = value
+               )
+             )
     }
 
     method PUSH_FROM_MAP(\target --> Nil) is implementation-detail {
@@ -48,6 +51,8 @@ my role Hash::Object[::TValue, ::TKey] does Associative[TValue] {
     }
 
     method ASSIGN-KEY(::?CLASS:D: TKey \key, Mu \assignval) is raw {
+        key.throw if nqp::istype(key,Failure);
+
         my \storage  := nqp::getattr(self, Map, '$!storage');
         my \WHICH    := key.WHICH;
         my \existing := nqp::atkey(storage,WHICH);
@@ -65,24 +70,30 @@ my role Hash::Object[::TValue, ::TKey] does Associative[TValue] {
     }
 
     method BIND-KEY(TKey \key, TValue \value) is raw {
-        nqp::getattr(
-          nqp::bindkey(
-            nqp::getattr(self,Map,'$!storage'),
-            key.WHICH,
-            Pair.new(key,value)
-          ),
-          Pair,
-          '$!value'
-        )
+        nqp::istype(key,Failure)
+          ?? key.throw
+          !! nqp::getattr(
+               nqp::bindkey(
+                 nqp::getattr(self,Map,'$!storage'),
+                 key.WHICH,
+                 Pair.new(key,value)
+               ),
+               Pair,
+               '$!value'
+             )
     }
 
     method EXISTS-KEY(TKey \key) {
-        nqp::hllbool(
-          nqp::existskey(nqp::getattr(self,Map,'$!storage'),key.WHICH)
-        )
+        nqp::istype(key,Failure)
+          ?? key.throw
+          !! nqp::hllbool(
+               nqp::existskey(nqp::getattr(self,Map,'$!storage'),key.WHICH)
+             )
     }
 
     method DELETE-KEY(TKey \key) {
+        key.throw if nqp::istype(key,Failure);
+
         nqp::if(
           nqp::isnull(my \value := nqp::atkey(
             nqp::getattr(self,Map,'$!storage'),
@@ -123,7 +134,36 @@ my role Hash::Object[::TValue, ::TKey] does Associative[TValue] {
         $flattened
     }
 
-    method IterationBuffer() {
+    multi method clone(::?CLASS:D:) {
+        my $iter := nqp::iterator(
+          my $storage := nqp::clone(nqp::getattr(self,Map,'$!storage'))
+        );
+
+        # Only re-containerize the values that are containers
+        nqp::while(
+          $iter,
+          nqp::if(
+            nqp::iscont(my $value := nqp::getattr(
+              (my $pair := nqp::iterval(nqp::shift($iter))),Pair,'$!value'
+            ));
+            nqp::bindkey(
+              $storage,nqp::iterkey_s($iter),
+              nqp::p6bindattrinvres(
+                nqp::clone($pair),Pair,'$!value',nqp::clone_nd($value)
+              )
+            )
+          )
+        );
+
+        nqp::p6bindattrinvres(
+          nqp::p6bindattrinvres(nqp::clone(self),Map,'$!storage',$storage),
+          Hash,
+          '$!descriptor',
+          nqp::clone(nqp::getattr(self,Hash,'$!descriptor'))
+        )
+    }
+
+    method IterationBuffer(::?CLASS:D:) {
         my \storage := nqp::getattr(self, Map, '$!storage');
         my \buffer  := nqp::create(IterationBuffer);
         nqp::if(

@@ -159,196 +159,258 @@ sub METAOP_ZIP(\op, &reduce) is implementation-detail {
 
 proto sub METAOP_REDUCE_LEFT(|) is implementation-detail {*}
 multi sub METAOP_REDUCE_LEFT(\op, \triangle) {
-    if op.count > 2 and op.count < Inf {
-        my $count = op.count;
-        sub (+values) {
-            my \source = values.iterator;
 
-            my \first = source.pull-one;
-            return () if nqp::eqaddr(first,IterationEnd);
+    my class TriangleLeftN does Iterator {
+        has     $!operator;
+        has int $!count;
+        has     $!iterator;
+        has     $!result;
+        has     $!args;
 
-            my @args.push: first;
-            GATHER({
-                take first;
-                until nqp::eqaddr((my \current = source.pull-one),IterationEnd) {
-                    @args.push: current;
-                    if @args.elems == $count {
-                        my \val = op.(|@args);
-                        take val;
-                        @args = ();
-                        @args.push: val;  # use of push allows op to return a Slip
-                    }
-                }
-            }).lazy-if(source.is-lazy);
+        method SET-SELF($operator, \values) {
+            my $iterator := values.iterator;
+            my $result   := $iterator.pull-one;
+
+            if nqp::eqaddr($result,IterationEnd) {
+                Rakudo::Iterator.Empty
+            }
+            else {
+                $!operator := $operator;
+                $!count     = $operator.count;
+                $!iterator := $iterator;
+                $!result   := $result;
+                nqp::push(($!args := nqp::create(IterationBuffer)),$result);
+                self
+            }
         }
+
+        method pull-one() {
+            my $result   := $!result;  # save return value
+            my $args     := $!args;    # lexicals are faster
+            my int $count = $!count;
+
+            # Make sure we have enough args
+            nqp::until(
+              nqp::iseq_i(nqp::elems($args),$count)
+                || nqp::eqaddr((my $value := $!iterator.pull-one),IterationEnd),
+              nqp::push($args,$value)
+            );
+
+            # Exactly enough args
+            if nqp::isge_i(nqp::elems($args),$count) {
+                $!result := $!operator(|$args.List);
+                nqp::setelems($args,0);
+                nqp::push($args,$!result);
+            }
+
+            # Not enough, done next iteration
+            else {
+                $!result := IterationEnd;
+            }
+
+            $result
+        }
+
+        method is-lazy() { $!iterator.is-lazy }
     }
-    else {
-        sub (+values) {
-            my \source = values.iterator;
 
-            my \first = source.pull-one;
-            return () if nqp::eqaddr(first,IterationEnd);
+    my class TriangleLeft2 does Iterator {
+        has $!operator;
+        has $!iterator;
+        has $!result;
 
-            my $result := first;
-            GATHER({
-                take first;
-                until nqp::eqaddr((my \value = source.pull-one),IterationEnd) {
-                    take ($result := op.($result, value));
-                }
-            }).lazy-if(source.is-lazy);
+        method SET-SELF($operator, \values) {
+            my $iterator := values.iterator;
+            my $result   := $iterator.pull-one;
+
+            if nqp::eqaddr($result,IterationEnd) {
+                Rakudo::Iterator.Empty
+            }
+            else {
+                $!operator := $operator;
+                $!iterator := $iterator;
+                $!result   := $result;
+                self
+            }
         }
+
+        method pull-one() {
+            my $result := $!result;  # save return value
+            my $value  := $!iterator.pull-one;
+
+            $!result := nqp::eqaddr($value,IterationEnd)
+              ?? IterationEnd
+              !! $!operator($!result, $value);
+
+            $result
+        }
+
+        method is-lazy() { $!iterator.is-lazy }
+    }
+
+    -> +values {
+        Seq.new: nqp::create(
+          2 < op.count < Inf ?? TriangleLeftN !! TriangleLeft2
+        ).SET-SELF(op, values)
     }
 }
 
 multi sub METAOP_REDUCE_LEFT(\op) {
-    if op.count > 2 and op.count < Inf {
-        my $count = op.count;
-        sub (+values) is raw {
-            my \iter = values.iterator;
-            my \first = iter.pull-one;
-            return op.() if nqp::eqaddr(first,IterationEnd);
 
-            my @args.push: first;
-            my $result := first;
-            until nqp::eqaddr((my \value = iter.pull-one),IterationEnd) {
-                @args.push: value;
-                if @args.elems == $count {
-                    my \val = op.(|@args);
-                    @args = ();
-                    @args.push: val;  # use of push allows op to return a Slip
-                    $result := val;
-                }
-            }
-            $result;
+    2 < op.count < Inf
+      ?? sub (+values) is raw {  # cannot be a block because of "is raw"
+             my int $count = op.count;
+             my $iterator := values.iterator;
+             my $args := nqp::create(IterationBuffer);
+             my $value;
+
+             # Initial fill of the args
+             nqp::until(
+               nqp::iseq_i(nqp::elems($args),$count)
+                || nqp::eqaddr(($value := $iterator.pull-one),IterationEnd),
+               nqp::push($args,$value)
+             );
+             my $result := op.(|$args.List);
+
+             # Could be we need to do more
+             if nqp::iseq_i(nqp::elems($args),$count) {
+                 nqp::setelems($args,0);
+                 nqp::push($args,$result);
+
+                 nqp::until(
+                   nqp::eqaddr(($value := $iterator.pull-one),IterationEnd),
+                   nqp::stmts(
+                     nqp::push($args,$value),
+                     nqp::if(
+                       nqp::iseq_i(nqp::elems($args),$count),
+                       nqp::stmts(
+                         ($result := op.(|$args.List)),
+                         nqp::setelems($args,0),
+                         nqp::push($args,$result)
+                       )
+                     )
+                   )
+                 );
+             }
+
+             $result
+         }
+      !! sub (+values) is raw {  # cannot be a block because of "is raw"
+             my $iterator := values.iterator;
+             nqp::if(
+               nqp::eqaddr((my $result := $iterator.pull-one),IterationEnd),
+               op.(),                         # identity
+               nqp::if(
+                 nqp::eqaddr((my $value := $iterator.pull-one),IterationEnd),
+                 op.($result),                # call with 1 param
+                 nqp::stmts(
+                   ($result := op.($result,$value)),
+                   nqp::until(
+                     nqp::eqaddr(($value := $iterator.pull-one),IterationEnd),
+                     ($result := op.($result,$value))
+                   ),
+                   $result                    # final result
+                 )
+               )
+             )
+         }
+}
+
+proto sub METAOP_REDUCE_RIGHT(|) is implementation-detail {*}
+multi sub METAOP_REDUCE_RIGHT(\op, \triangle) {
+
+    class RightTriangleN does Iterator {
+        has $!op;
+        has $!reified;
+        has $!result;
+        has int $!count;
+        has int $!i;
+
+        method SET-SELF($op, $count, $i, \list) {
+            $!op      := $op;
+            $!count    = $count;
+            $!i        = $i;
+            $!reified := nqp::getattr(list,List,'$!reified');
+            $!result  := nqp::null;
+            self
         }
-    }
-    else {
-        sub (+values) is raw {
-            my $iter := values.iterator;
+
+        method pull-one() is raw {
             nqp::if(
-              nqp::eqaddr((my $result := $iter.pull-one),IterationEnd),
-              op.(),                         # identity
-              nqp::if(
-                nqp::eqaddr((my $value := $iter.pull-one),IterationEnd),
-                nqp::if(
-                  nqp::isle_i(op.arity,1),
-                  op.($result),              # can call with 1 param
-                  $result                    # what we got
+              nqp::isnull($!result),
+              ($!result := nqp::atpos($!reified,--$!i)),
+              nqp::stmts(
+                (my $args := nqp::list($!result)),
+                nqp::until(
+                  nqp::iseq_i(nqp::elems($args),$!count)
+                    || nqp::islt_i(--$!i,0),
+                  nqp::unshift($args,nqp::atpos($!reified,$!i))
                 ),
-                nqp::stmts(
-                  ($result := op.($result,$value)),
-                  nqp::until(
-                    nqp::eqaddr(($value := $iter.pull-one),IterationEnd),
-                    ($result := op.($result,$value))
-                  ),
-                  $result                    # final result
+                nqp::if(
+                  nqp::isgt_i(nqp::elems($args),1),
+                  ($!result := $!op.(|nqp::hllize($args))),
+                  IterationEnd
                 )
               )
             )
         }
     }
-}
 
-proto sub METAOP_REDUCE_RIGHT(|) is implementation-detail {*}
-multi sub METAOP_REDUCE_RIGHT(\op, \triangle) {
-    nqp::if(
-      op.count < Inf && nqp::isgt_i((my int $count = op.count),2),
-      sub (+values) {
-          Seq.new(nqp::if(
-            nqp::isge_i((my int $i = (my $v :=
-                nqp::if(nqp::istype(values,List),values,values.List)
-              ).elems),                                       # reifies
-              $count
-            ),   # reifies
-            class :: does Iterator {
-                has $!op;
-                has $!reified;
-                has $!result;
-                has int $!count;
-                has int $!i;
-                method !SET-SELF(\op,\list,\count,\index) {
-                    $!op := op;
-                    $!reified := nqp::getattr(list,List,'$!reified');
-                    $!result := nqp::null;
-                    $!count = count;
-                    $!i = index;
-                    self
-                }
-                method new(\op,\list,\count,\index) {
-                    nqp::create(self)!SET-SELF(op,list,count,index)
-                }
-                method pull-one() is raw {
-                    nqp::if(
-                      nqp::isnull($!result),
-                      ($!result := nqp::atpos($!reified,--$!i)),
-                      nqp::stmts(
-                        (my $args := nqp::list($!result)),
-                        nqp::until(
-                          nqp::iseq_i(nqp::elems($args),$!count)
-                            || nqp::islt_i(--$!i,0),
-                          nqp::unshift($args,nqp::atpos($!reified,$!i))
-                        ),
-                        nqp::if(
-                          nqp::isgt_i(nqp::elems($args),1),
-                          ($!result := op.(|nqp::hllize($args))),
-                          IterationEnd
-                        )
-                      )
-                    )
-                }
-            }.new(op,$v,$count,$i),
-            Rakudo::Iterator.OneValue(
-              $i
-                ?? op.(|nqp::getattr($v,List,'$!reified'))
-                !! op.()
-            )
-          ))
-      },
-      sub (+values) {
-          Seq.new(nqp::if(
-            nqp::isgt_i((my int $i = (my $v :=
-                nqp::if(nqp::istype(values,List),values,values.List)
-              ).elems),                                       # reifies
-              1
-            ),
-            class :: does Iterator {
-                has $!op;
-                has $!reified;
-                has $!result;
-                has int $!i;
-                method !SET-SELF(\op,\list,\count) {
-                    $!op := op;
-                    $!reified := nqp::getattr(list,List,'$!reified');
-                    $!result := nqp::null;
-                    $!i = count;
-                    self
-                }
-                method new(\op,\li,\co) { nqp::create(self)!SET-SELF(op,li,co) }
-                method pull-one() is raw {
-                    nqp::if(
-                      nqp::isnull($!result),
-                      ($!result := nqp::atpos($!reified,--$!i)),
-                      nqp::if(
-                        nqp::isge_i(--$!i,0),
-                        ($!result := $!op.(nqp::atpos($!reified,$!i),$!result)),
-                        IterationEnd
-                      )
-                    )
-                }
-            }.new(op,$v,$i),
-            Rakudo::Iterator.OneValue(
-              $i
-                ?? op.(nqp::atpos(nqp::getattr($v,List,'$!reified'),0))
-                !! op.()
-            )
-          ))
-      }
-    )
+    my class RightTriangle2 does Iterator {
+        has $!op;
+        has $!reified;
+        has $!result;
+        has int $!i;
+
+        method SET-SELF($op, $i, \list) {
+            $!op      := $op;
+            $!i        = $i;
+            $!reified := nqp::getattr(list,List,'$!reified');
+            $!result  := nqp::null;
+            self
+        }
+
+        method pull-one() is raw {
+            nqp::isnull($!result)
+              ?? ($!result := nqp::atpos($!reified,--$!i))
+              !! nqp::isge_i(--$!i,0)
+                ?? ($!result := $!op.(nqp::atpos($!reified,$!i),$!result))
+                !! IterationEnd
+        }
+
+        method push-all($target --> IterationEnd) {
+            my $op      := $!op;
+            my $reified := $!reified;
+            my int $i    = $!i;
+
+            $target.push(my $result := nqp::atpos($reified,--$i));
+            nqp::while(
+              nqp::isge_i(--$i,0),
+              $target.push($result := $op.(nqp::atpos($reified,$i),$result))
+            );
+        }
+    }
+
+    op.count < Inf && nqp::isgt_i((my int $count = op.count),2)
+      ?? -> +values {
+             my $list := nqp::istype(values,List) ?? values !! values.List;
+             Seq.new:
+               nqp::isge_i((my int $i = $list.elems),$count)   # reifies
+                 ?? nqp::create(RightTriangleN).SET-SELF(op,$count,$i,$list)
+                 !! Rakudo::Iterator.OneValue($i ?? op.(|$list) !! op.())
+         }
+      !! -> +values {
+             my $list := nqp::istype(values,List) ?? values !! values.List;
+             Seq.new:
+               nqp::isgt_i((my int $i = $list.elems),1)   # reifies
+                 ?? nqp::create(RightTriangle2).SET-SELF(op, $i, $list)
+                 !! Rakudo::Iterator.OneValue($i ?? op.($list.head) !! op.())
+         }
 }
 multi sub METAOP_REDUCE_RIGHT(\op) {
     nqp::if(
       op.count < Inf && nqp::isgt_i((my int $count = op.count),2),
-      sub (+values) {
+      -> +values {
           # get a reified list
           (my $list := nqp::istype(values,List) ?? values !! values.List).elems;
           my $reified := nqp::getattr($list,List,'$!reified');
@@ -383,7 +445,7 @@ multi sub METAOP_REDUCE_RIGHT(\op) {
             )
         )
       },
-      sub (+values) {
+      -> +values {
           # get a reified list
           (my $list := nqp::istype(values,List) ?? values !! values.List).elems;
           my $reified := nqp::getattr($list,List,'$!reified');
@@ -410,39 +472,110 @@ multi sub METAOP_REDUCE_RIGHT(\op) {
 
 proto sub METAOP_REDUCE_LIST(|) is implementation-detail {*}
 multi sub METAOP_REDUCE_LIST(\op, \triangle) {
-    sub (+values) {
-        GATHER({
-            my @list;
-            for values -> \v {
-                @list.push(v);
-                take op.(|@list);
+
+    my class TriangleList does Iterator {
+        has $!operator;
+        has $!iterator;
+        has $!result;
+        has $!args;
+
+        method SET-SELF($operator, \values) {
+            my $iterator := values.iterator;
+            my $value    := $iterator.pull-one;
+            if nqp::eqaddr($value,IterationEnd) {
+                Rakudo::Iterator.Empty
             }
-        }).lazy-if(values.is-lazy);
+            else {
+                $!operator := $operator;
+                $!iterator := $iterator;
+                nqp::push(
+                  ($!args   := nqp::create(IterationBuffer)),
+                  ($!result := $operator($value))
+                );
+                self
+            }
+        }
+
+        method pull-one() {
+            my $result := $!result;
+
+            my $value := $!iterator.pull-one;
+            $!result := nqp::if(
+              nqp::eqaddr($value,IterationEnd),
+              IterationEnd,
+              nqp::stmts(
+                nqp::push($!args,$value),
+                nqp::if(
+                  nqp::eqaddr(
+                    ($value := $!operator(|$!args.List)),
+                    Empty
+                  ),
+                  IterationEnd,
+                  $value
+                )
+              )
+            );
+
+            $result
+        }
+
+        method is-lazy() { $!iterator.is-lazy }
+    }
+
+    -> +values {
+        Seq.new: nqp::create(TriangleList).SET-SELF(op, values)
     }
 }
-multi sub METAOP_REDUCE_LIST(\op) {
-    sub (+values) { op.(|values) }
+multi sub METAOP_REDUCE_LIST(&op) {
+    -> +values { op(|values) }
 }
 
 proto sub METAOP_REDUCE_LISTINFIX(|) is implementation-detail {*}
 multi sub METAOP_REDUCE_LISTINFIX(\op, \triangle) {
-    sub (|values) {
-        my \p = values[0];
-        return () unless p.elems;
 
-        my int $i;
-        GATHER({
-            my @list;
-            while $i < p.elems {
-                @list.push(p[$i++]);
-                take op.(|@list.map({nqp::decont($_)}));
-            }
-        }).lazy-if(p.is-lazy);
+    my class TriangleListInfix does Iterator {
+        has $!operator;
+        has $!iterator;
+        has $!buffer;
+
+        method SET-SELF($operator, $values) {
+            $!operator := $operator;
+            $!iterator := $values.iterator;
+            $!buffer   := nqp::create(IterationBuffer);
+            self
+        }
+
+        method pull-one() {
+            nqp::if(
+              nqp::eqaddr((my $value := $!iterator.pull-one),IterationEnd),
+              IterationEnd,
+              nqp::stmts(
+                nqp::push($!buffer,nqp::decont($value)),
+                $!operator(|$!buffer.List)
+              )
+            )
+        }
+
+        method is-lazy() { $!iterator.is-lazy }
+    }
+
+    -> $values {
+        Seq.new:
+          nqp::create(TriangleListInfix).SET-SELF(op, $values)
     }
 }
 multi sub METAOP_REDUCE_LISTINFIX(\op) {
-    sub (+values) {
-        op.(|values.map({nqp::decont($_)}));
+    -> +values {
+
+        # Create decontainerized list
+        my $iterator := values.iterator;
+        my $buffer   := nqp::create(IterationBuffer);
+        nqp::until(
+          nqp::eqaddr((my $pulled := $iterator.pull-one),IterationEnd),
+          nqp::push($buffer,nqp::decont($pulled))
+        );
+
+        op.(|$buffer.List);
     }
 }
 
@@ -490,7 +623,16 @@ sub METAOP_REDUCE_XOR(\op, $triangle?) is implementation-detail {
 }
 
 sub METAOP_HYPER(\op, *%opt) is implementation-detail {
-    -> Mu \a, Mu \b { HYPER(op, a, b, |%opt) }
+    -> | {
+        my int $elems = nqp::elems(my Mu $args := nqp::p6argvmarray);
+        $elems == 2
+          ?? HYPER(op, nqp::atpos($args,0), nqp::atpos($args,1), |%opt)
+          !! $elems == 1
+            ?? op.(nqp::atpos($args,0))
+            !! $elems
+              ?? die("Got $elems to hyper, expected 0,1,2")
+              !! op.()
+    }
 }
 
 proto sub METAOP_HYPER_POSTFIX(|) is implementation-detail {*}

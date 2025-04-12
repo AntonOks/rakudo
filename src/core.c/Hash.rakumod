@@ -18,12 +18,27 @@ my class Hash { # declared in BOOTSTRAP
     multi method Map(Hash:D:) {
         nqp::create(Map).STORE(self, :INITIALIZE, :DECONT)
     }
-    method clone(Hash:D:) is raw {
+
+    multi method clone(Hash:D:) {
+        my $iter := nqp::iterator(
+          my $storage := nqp::clone(nqp::getattr(self,Map,'$!storage'))
+        );
+
+        # Only re-containerize the values that are containers
+        nqp::while(
+          $iter,
+          nqp::if(
+            nqp::iscont(my $value := nqp::iterval(nqp::shift($iter))),
+            nqp::bindkey(
+              $storage,nqp::iterkey_s($iter),nqp::clone_nd($value)
+            )
+          )
+        );
+
         nqp::p6bindattrinvres(
-          nqp::p6bindattrinvres(
-            nqp::create(self),Map,'$!storage',
-            nqp::clone(nqp::getattr(self,Map,'$!storage'))),
-          Hash, '$!descriptor', nqp::clone($!descriptor))
+          nqp::p6bindattrinvres(nqp::clone(self),Map,'$!storage',$storage),
+          Hash, '$!descriptor', nqp::clone($!descriptor)
+        )
     }
 
     method !AT_KEY_CONTAINER(str $key) is raw {
@@ -450,23 +465,32 @@ my class Hash { # declared in BOOTSTRAP
             !! self.clone
     }
 
-    method ^parameterize(Mu:U \hash, Mu \of, Mu \keyof = Str(Any)) {
+    method ^parameterize(
+      Mu:U \hash,
+      Mu \of,
+      Mu \keyof = Str(Any),
+      Mu \default = of
+    ) {
         # fast path
-        if nqp::eqaddr(of,Mu) && nqp::eqaddr(keyof,Str(Any)) {
+        if nqp::eqaddr(of,Mu)
+          && nqp::eqaddr(keyof,Str(Any))
+          && nqp::eqaddr(default,Any) {
             hash
         }
 
         # error checking
         elsif nqp::isconcrete(of) {
-            "Can not parameterize {hash.^name} with {of.raku}"
+            die "Can not parameterize {hash.^name} with {of.raku}"
         }
 
         # only constraint on type
         elsif nqp::eqaddr(keyof,Str(Any)) {
-            my $what := hash.^mixin(Hash::Typed[of]);
+            my $what := hash.^mixin(Hash::Typed[of, Str(Any), default]);
              # needs to be done in COMPOSE phaser when that works
-            $what.^set_name:
-              hash.^name ~ '[' ~ of.^name ~ ']';
+            my $name = hash.^name ~ '[' ~ of.^name;
+            $name ~= (',Str(Any),' ~ default.^name)
+              unless nqp::eqaddr(default,of);
+            $what.^set_name: "$name]";
             $what
         }
 
@@ -484,10 +508,11 @@ my class Hash { # declared in BOOTSTRAP
 
         # a true object hash
         else {
-            my $what := hash.^mixin(Hash::Object[of, keyof]);
+            my $what := hash.^mixin(Hash::Object[of, keyof, default]);
             # needs to be done in COMPOSE phaser when that works
-            $what.^set_name:
-              hash.^name ~ '[' ~ of.^name ~ ',' ~ keyof.^name ~ ']';
+            my $name = hash.^name ~ '[' ~ of.^name ~ ',' ~ keyof.^name;
+            $name ~= (',' ~ default.^name) unless nqp::eqaddr(default,of);
+            $what.^set_name: "$name]";
             $what
         }
     }
@@ -497,10 +522,7 @@ proto sub circumfix:<{ }>(|) {*}
 multi sub circumfix:<{ }>() is default { my % }
 multi sub circumfix:<{ }>(*@elems) { my % = @elems }
 
-# XXX parse dies with 'don't change grammar in the setting, please!'
-# with ordinary sub declaration
-#sub circumfix:<:{ }>(*@elems) { Hash.^parameterize(Mu,Any).new(@elems) }
-BEGIN my &circumfix:<:{ }> = sub (*@e) { Hash.^parameterize(Mu,Any).new(@e) }
+sub circumfix:<:{ }>(*@elems) { Hash.^parameterize(Mu,Mu,Any).new(@elems) }
 
 proto sub hash(|) {*}
 #?if !jvm

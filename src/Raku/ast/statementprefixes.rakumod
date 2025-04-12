@@ -47,6 +47,10 @@ class RakuAST::StatementPrefix::Do
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         self.IMPL-CALLISH-QAST($context)
     }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
+    }
 }
 
 # The `quietly` statement prefix.
@@ -58,6 +62,10 @@ class RakuAST::StatementPrefix::Quietly
 
     method propagate-sink(Bool $is-sunk) {
         self.blorst.apply-sink($is-sunk);
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -79,6 +87,10 @@ class RakuAST::StatementPrefix::CallMethod
     # default for these cases is False
     method allowed-on-for-statement() { False }
 
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
+    }
+
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         QAST::Op.new(
           :op('callmethod'), :name(self.type),
@@ -92,6 +104,10 @@ class RakuAST::StatementPrefix::Race
   is RakuAST::StatementPrefix::CallMethod
 {
     method type() { "race" }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
+    }
 }
 
 # The `hyper` statement prefix.
@@ -99,6 +115,10 @@ class RakuAST::StatementPrefix::Hyper
   is RakuAST::StatementPrefix::CallMethod
 {
     method type() { "hyper" }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
+    }
 }
 
 # The `lazy` statement prefix.
@@ -133,7 +153,11 @@ class RakuAST::StatementPrefix::Try
     method type() { "try" }
 
     method propagate-sink(Bool $is-sunk) {
-        self.blorst.apply-sink($is-sunk);
+        self.blorst.apply-sink(False);
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
@@ -153,10 +177,10 @@ class RakuAST::StatementPrefix::Try
 
         # Otherwise, need to wrap it in exception handler logic.
         else {
-            my $lookups := self.get-implicit-lookups;
-            my $nil     := $lookups.AT-POS(0).IMPL-TO-QAST($context);
-            my $bang    := $lookups.AT-POS(1).IMPL-TO-QAST($context);
-            my $Failure := $lookups.AT-POS(2).IMPL-TO-QAST($context);
+            my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
+            my $nil     := $lookups[0].IMPL-TO-QAST($context);
+            my $bang    := $lookups[1].IMPL-TO-QAST($context);
+            my $Failure := $lookups[2].IMPL-TO-QAST($context);
 
             my $tmp := QAST::Node.unique('fatalizee');
             my $qast := self.IMPL-CALLISH-QAST($context);
@@ -209,13 +233,22 @@ class RakuAST::StatementPrefix::Try
 # object.
 class RakuAST::StatementPrefix::Thunky
   is RakuAST::StatementPrefix
+  is RakuAST::MayCreateBlock
   is RakuAST::Meta
   is RakuAST::Code
   is RakuAST::BeginTime
 {
+    method creates-block() {
+        nqp::istype(self.blorst, RakuAST::Block) ?? False !! True;
+    }
+
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         self.IMPL-STUB-CODE($resolver, $context);
         Nil
+    }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
     }
 
     method PRODUCE-META-OBJECT() {
@@ -239,11 +272,26 @@ class RakuAST::StatementPrefix::Thunky
             self.blorst.IMPL-QAST-FORM-BLOCK($context, :$blocktype, :$expression)
         }
         else {
+            my $stmts := QAST::Stmts.new();
             my $block := QAST::Block.new(
                 :blocktype('declaration_static'),
-                QAST::Stmts.new(
-                    self.blorst.IMPL-TO-QAST($context)
-                ));
+                $stmts);
+            if nqp::istype(self, RakuAST::ImplicitDeclarations) {
+                for self.IMPL-UNWRAP-LIST(self.get-implicit-declarations()) -> $decl {
+                    if $decl.is-simple-lexical-declaration {
+                        nqp::push($stmts, $decl.IMPL-QAST-DECL($context));
+                    }
+                }
+            }
+            if nqp::istype($expression, RakuAST::ImplicitDeclarations) {
+                for self.IMPL-UNWRAP-LIST($expression.get-implicit-declarations()) -> $decl {
+                    if nqp::istype($decl, RakuAST::VarDeclaration::Implicit::State) && $decl.is-simple-lexical-declaration {
+                        nqp::push($stmts, $decl.IMPL-QAST-DECL($context));
+                    }
+                }
+            }
+            $stmts.push(self.IMPL-QAST-NESTED-BLOCK-DECLS($context));
+            $stmts.push(self.blorst.IMPL-TO-QAST($context));
             $block.arity(0);
             $block
         }
@@ -269,6 +317,25 @@ class RakuAST::StatementPrefix::Thunky
         }
         else {
             self.IMPL-QAST-BLOCK($context, :blocktype('declaration_static'))
+        }
+    }
+
+    # Since we thunk statements, we must not use their QAST directly anymore and instead
+    # generate a call to the block we created.
+    method IMPL-CALLISH-QAST(RakuAST::IMPL::QASTContext $context) {
+        if nqp::istype(self.blorst, RakuAST::Block) {
+            self.blorst.IMPL-QAST-BLOCK($context, :blocktype<declaration_static>);
+            QAST::Op.new( :op('call'), self.blorst.IMPL-TO-QAST($context) )
+        }
+        else {
+            my $block := self.meta-object;
+            $context.ensure-sc($block);
+            my $clone := QAST::Op.new(
+                :op('callmethod'), :name('clone'),
+                QAST::WVal.new( :value($block) ).annotate_self('past_block', self.IMPL-QAST-BLOCK($context, :blocktype('declaration_static'))).annotate_self('code_object', $block)
+            );
+            my $closure := QAST::Op.new( :op('p6capturelex'), $clone );
+            QAST::Op.new( :op('call'), $closure)
         }
     }
 }
@@ -324,6 +391,7 @@ class RakuAST::StatementPrefix::Blorst
               QAST::Stmts.new(
                 RakuAST::VarDeclaration::Implicit::Special.new(:name('$/')).IMPL-QAST-DECL($context),
                 RakuAST::VarDeclaration::Implicit::Special.new(:name('$!')).IMPL-QAST-DECL($context),
+                self.IMPL-QAST-NESTED-BLOCK-DECLS($context),
                 self.blorst.IMPL-TO-QAST($context)
               ));
             $block.arity(0);
@@ -386,14 +454,14 @@ class RakuAST::StatementPrefix::Start
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
-        my $lookups := self.get-implicit-lookups;
+        my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
         my $qast := QAST::Op.new(
             :op('callmethod'), :name('start'),
-            $lookups.AT-POS(0).IMPL-TO-QAST($context),
+            $lookups[0].IMPL-TO-QAST($context),
             self.IMPL-CLOSURE-QAST($context)
         );
         unless $context.lang-version eq 'c' {
-            my $true := $lookups.AT-POS(1).IMPL-TO-QAST($context);
+            my $true := $lookups[1].IMPL-TO-QAST($context);
             $true.named('report-broken-if-sunk');
             $qast.push($true);
         }
@@ -404,17 +472,52 @@ class RakuAST::StatementPrefix::Start
 # # Base class for prefixes that can have whenevers in them
 class RakuAST::StatementPrefix::Wheneverable
   is RakuAST::StatementPrefix::Blorst
+  is RakuAST::AttachTarget
 {
+    has List $!whenevers;
+
+    method new(RakuAST::Blorst $blorst?) {
+        my $obj := nqp::create(self);
+        unless self.allowed-on-for-statement {
+            if nqp::istype($blorst, RakuAST::Statement::For) {
+                nqp::die('Do not use this statement prefix on a RakuAST::Statement::For; ' ~
+                    'instead, set the mode on that node');
+            }
+        }
+        nqp::bindattr($obj, RakuAST::StatementPrefix, '$!blorst', $blorst // RakuAST::Blorst);
+        $obj
+    }
+
+    method replace-blorst(RakuAST::Blorst $blorst) {
+        nqp::bindattr(self, RakuAST::StatementPrefix, '$!blorst', $blorst);
+    }
+
+    method attach-target-names() {
+        ['wheneverable']
+    }
+
+    method IMPL-WHENEVER-COUNT() {
+        nqp::isconcrete($!whenevers) ?? nqp::elems($!whenevers) !! 0;
+    }
+
+    method IMPL-ADD-WHENEVER(RakuAST::Statement::Whenever $whenever) {
+        unless nqp::isconcrete($!whenevers) {
+            nqp::bindattr(self, RakuAST::StatementPrefix::Wheneverable, '$!whenevers', []);
+        }
+        nqp::push($!whenevers, $whenever);
+    }
+
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         my str $name := '&' ~ nqp::uc(self.type);
         my $blorst   := self.blorst;
-        if nqp::istype($blorst, RakuAST::Statement::Whenever) {
-            $name := $name ~ '-ONE-WHENEVER'
-              unless $blorst.body.any-whenevers;
-        }
-        else {
-            $name := $name ~ '-ONE-WHENEVER'
-              if $blorst.body.statement-list.single-last-whenever;
+        if $context.language-revision > 1 && self.IMPL-WHENEVER-COUNT == 1 {
+            if nqp::istype($blorst, RakuAST::Statement::Whenever) {
+                $name := $name ~ '-ONE-WHENEVER';
+            }
+            else {
+                $name := $name ~ '-ONE-WHENEVER'
+                  if nqp::istype($blorst, RakuAST::Block) && $blorst.body.statement-list.single-last-whenever;
+            }
         }
 
         QAST::Op.new(
@@ -442,6 +545,10 @@ class RakuAST::StatementPrefix::Supply
 class RakuAST::StatementPrefix::Phaser
   is RakuAST::StatementPrefix {
     method dump-markers() { '🛸' }
+
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
+    }
 }
 
 # Done by all phasers that don't produce a result.
@@ -461,7 +568,7 @@ class RakuAST::StatementPrefix::Phaser::Sinky
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
-        self.get-implicit-lookups.AT-POS(0).IMPL-TO-QAST($context);
+        self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].IMPL-TO-QAST($context);
     }
 }
 
@@ -479,11 +586,32 @@ class RakuAST::StatementPrefix::Phaser::Begin
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         self.IMPL-STUB-CODE($resolver, $context);
 
+        self.blorst.propagate-sink(False) if nqp::istype(self.blorst, RakuAST::Block);
+
         nqp::bindattr_i(self, RakuAST::BeginTime, '$!begin-performed', 1); # avoid infinite loop
         my $producer := self.IMPL-BEGIN-TIME-EVALUATE(self,$resolver,$context);
-        nqp::bindattr(self, RakuAST::StatementPrefix::Phaser::Begin,
-          '$!value', $producer());
+        {
+            CATCH {
+                my $ex := $resolver.convert-begin-time-exception($_);
+                if nqp::can($ex, 'SET_FILE_LINE') && my $origin := self.origin {
+                    my $origin-match := $origin.as-match;
+                    $ex.SET_FILE_LINE($origin-match.file, $origin-match.line);
+                }
+                $ex.rethrow;
+            }
+            nqp::bindattr(self, RakuAST::StatementPrefix::Phaser::Begin,
+              '$!value', $producer());
+        }
         Nil
+    }
+
+    method IMPL-EXTRA-BEGIN-TIME-DECLS(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        if nqp::istype(self.blorst, RakuAST::Block) {
+            []
+        }
+        else {
+            self.IMPL-UNWRAP-LIST($resolver.current-scope.generated-lexical-declarations);
+        }
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -511,11 +639,13 @@ class RakuAST::StatementPrefix::Phaser::Check
 
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         self.IMPL-STUB-CODE($resolver, $context);
-        my $producer := RakuAST::BeginTime.IMPL-BEGIN-TIME-EVALUATE(self, $resolver, $context);
-        $resolver.find-attach-target('compunit').add-check-phaser(-> {
-            nqp::bindattr(self, RakuAST::StatementPrefix::Phaser::Check, '$!value', $producer());
-        });
+        $resolver.find-attach-target('compunit').add-check-phaser(self);
         Nil
+    }
+
+    method run(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        my $producer := RakuAST::BeginTime.IMPL-BEGIN-TIME-EVALUATE(self, $resolver, $context);
+        nqp::bindattr(self, RakuAST::StatementPrefix::Phaser::Check, '$!value', $producer())
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -620,6 +750,17 @@ class RakuAST::StatementPrefix::Phaser::Quit
 
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         $resolver.find-attach-target('block').add-phaser("QUIT", self);
+
+        if nqp::istype(self.blorst, RakuAST::Block) {
+            self.blorst.set-needs-result(True);
+            self.blorst.body.statement-list.add-statement(
+                RakuAST::Statement::Expression.new(
+                    :expression(
+                        RakuAST::Var::Lexical.new('$_', :sigil('$'), :desigilname(RakuAST::Name.from-identifier('_'))).to-begin-time($resolver, $context)
+                    )
+                )
+            );
+        }
     }
 
     method meta-object() {

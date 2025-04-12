@@ -1,6 +1,6 @@
 # Done by anything that implies a lexical scope.
 class RakuAST::LexicalScope
-  is RakuAST::CheckTime
+  is RakuAST::MayCreateBlock
   is RakuAST::Node
 {
     # Caching of lexical declarations in this scope due to AST nodes.
@@ -19,10 +19,25 @@ class RakuAST::LexicalScope
     has Mu $!catch-handlers;
     has Mu $!control-handlers;
 
+    # Scope pragmas. Note that the default for these is undefined!
     has Bool $.fatal;
+    has Bool $.tell-worries;
 
     method set-fatal(Bool $on) {
         nqp::bindattr(self, RakuAST::LexicalScope, '$!fatal', $on);
+    }
+
+    method set-worries(Bool $on) {
+        nqp::bindattr(self, RakuAST::LexicalScope, '$!tell-worries', $on);
+    }
+
+    method creates-block() {
+        True
+    }
+
+    # If this counts as a declaration, this is the declarator reported in error messages.
+    method declarator() {
+        Nil
     }
 
     method IMPL-QAST-DECLS(RakuAST::IMPL::QASTContext $context) {
@@ -46,15 +61,6 @@ class RakuAST::LexicalScope
         while @code-todo {
             my $visit := @code-todo.shift;
             $visit.visit-children: -> $node {
-                if nqp::istype($node, RakuAST::Code) {
-                    unless nqp::istype($visit, RakuAST::IMPL::ImmediateBlockUser) &&
-                            $visit.IMPL-IMMEDIATELY-USES($node) {
-                        $stmts.push($node.IMPL-QAST-DECL-CODE($context));
-                    }
-                }
-                if nqp::istype($node, RakuAST::Expression) {
-                    $node.IMPL-QAST-ADD-THUNK-DECL-CODE($context, $stmts);
-                }
                 if nqp::istype($node, RakuAST::FakeSignature) {
                     $stmts.push($node.block.IMPL-QAST-DECL-CODE($context));
                 }
@@ -64,10 +70,15 @@ class RakuAST::LexicalScope
                     }
                 }
                 else {
-                    @code-todo.push($node);
+                    unless nqp::istype($node, RakuAST::MayCreateBlock) && $node.creates-block {
+                        @code-todo.push($node);
+                    }
                 }
             }
         }
+
+        my $nested-blocks := self.IMPL-QAST-NESTED-BLOCK-DECLS($context);
+        $stmts.push($nested-blocks) if nqp::elems($nested-blocks.list);
 
         # If there's handler block declarations, add those.
         if $!catch-handlers {
@@ -96,20 +107,33 @@ class RakuAST::LexicalScope
         unless nqp::isconcrete($!declarations-cache) {
             my @declarations;
             my @variables;
+            my %variables-seen;
+            my @not-if-duplicate;
             self.visit-dfs: -> $node {
                 if nqp::istype($node, RakuAST::Declaration) && $node.is-simple-lexical-declaration {
                     nqp::push(@declarations, $node);
                     nqp::push(@variables, $node) unless nqp::istype($node, RakuAST::Routine);
                 }
-                elsif nqp::istype($node, RakuAST::Var::Lexical) || nqp::istype($node, RakuAST::Var::Dynamic) {
+                elsif nqp::istype($node, RakuAST::Var::Lexical)
+                    || nqp::istype($node, RakuAST::Var::Dynamic)
+                {
                     nqp::push(@variables, $node);
+                }
+                elsif nqp::istype($node, RakuAST::VarDeclaration::Placeholder) {
+                    nqp::push(@variables, $node) unless nqp::existskey(%variables-seen, $node.declared-name);
+                    %variables-seen{$node.declared-name} := 1;
                 }
                 if $node =:= self || !nqp::istype($node, RakuAST::LexicalScope) {
                     if nqp::istype($node, RakuAST::ImplicitDeclarations) {
                         for self.IMPL-UNWRAP-LIST($node.get-implicit-declarations()) -> $decl {
                             if $decl.is-simple-lexical-declaration {
-                                nqp::push(@declarations, $decl);
-                                nqp::push(@variables, $decl);
+                                if nqp::istype($decl, RakuAST::VarDeclaration::Implicit::BlockTopic) && $decl.IMPL-NOT-IF-DUPLICATE {
+                                    nqp::push(@not-if-duplicate, $decl);
+                                }
+                                else {
+                                    nqp::push(@declarations, $decl);
+                                    nqp::push(@variables, $decl);
+                                }
                             }
                         }
                     }
@@ -117,6 +141,22 @@ class RakuAST::LexicalScope
                 }
                 else {
                     0 # it's an inner scope, don't visit its children
+                }
+            }
+            for @not-if-duplicate -> $decl {
+                my $found := 0;
+                for @declarations {
+                    if $_.lexical-name eq '$_' && !($_ =:= $decl) {
+                        $found := 1;
+                        last;
+                    }
+                }
+                unless $found {
+                    # Implicits are declared right at the start of a lexical scope anyway,
+                    # so it should be safe to unshift them. We need them to be declared before
+                    # they are first used.
+                    nqp::unshift(@declarations, $decl);
+                    nqp::unshift(@variables, $decl);
                 }
             }
             nqp::bindattr(self, RakuAST::LexicalScope, '$!declarations-cache', @declarations);
@@ -239,26 +279,32 @@ class RakuAST::LexicalScope
 
     method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         my %lookup;
-        for self.IMPL-UNWRAP-LIST(self.generated-lexical-declarations) {
+        for self.IMPL-UNWRAP-LIST(self.ast-lexical-declarations) {
             my $lexical-name := $_.lexical-name;
-            if $lexical-name {
+            if $lexical-name && !($_ =:= self) {
                 if nqp::existskey(%lookup, $lexical-name) {
-                    self.add-sorry:
+                    self.add-worry:
                       $resolver.build-exception: 'X::Redeclaration',
-                        :symbol($lexical-name), :what($_.declaration-kind);
+                        :symbol($_.declaration-name), :what($_.declaration-kind)
+                    # It will be two worries for var declaration, so skip one, not sure about others.
+                    unless nqp::istype($_, RakuAST::VarDeclaration);
                 }
                 else {
                     %lookup{$lexical-name} := $_;
                 }
             }
         }
-        for self.IMPL-UNWRAP-LIST(self.ast-lexical-declarations) {
+
+        for self.IMPL-UNWRAP-LIST(self.generated-lexical-declarations) {
             my $lexical-name := $_.lexical-name;
-            if $lexical-name && ! $_ =:= self {
+            if $lexical-name {
                 if nqp::existskey(%lookup, $lexical-name) {
                     self.add-sorry:
                       $resolver.build-exception: 'X::Redeclaration',
-                        :symbol($lexical-name), :what($_.declaration-kind);
+                        :symbol($_.declaration-name),
+                        :what($_.declaration-kind),
+                        :postfix(nqp::istype($_, RakuAST::VarDeclaration::Placeholder) ?? 'as a placeholder parameter' !! '')
+                    unless %lookup{$lexical-name} =:= $_;
                 }
                 else {
                     %lookup{$lexical-name} := $_;
@@ -276,10 +322,19 @@ class RakuAST::LexicalScope
             else {
                 if $var.is-resolved && nqp::existskey(%declarations, $var.name) {
                     my $decl := %declarations{$var.name};
-                    $decl.add-sorry:
-                      $resolver.build-exception:
-                        $var.postdeclaration-exception-name,
-                        :symbol($decl.lexical-name);
+                    if nqp::istype($decl, RakuAST::VarDeclaration::Placeholder) {
+                        $decl.add-sorry:
+                            $resolver.build-exception: 'X::Placeholder::NonPlaceholder',
+                                :placeholder($decl.declared-name),
+                                :variable_name($var.name),
+                                :decl(self.declarator // ''),
+                    }
+                    else {
+                        $decl.add-sorry:
+                            $resolver.build-exception:
+                                $var.postdeclaration-exception-name,
+                                :symbol($decl.lexical-name);
+                    }
                     $resolver.add-node-with-check-time-problems($decl);
                 }
             }
@@ -324,7 +379,7 @@ class RakuAST::LexicalScope
             my $handle := QAST::Op.new( :op('handle'), $statements );
             if $!need-succeed-handler {
                 $handle.push('SUCCEED');
-                $handle.push(QAST::Op.new( :op('getpayload'), QAST::Op.new( :op('exception') ) ));
+                $handle.push(QAST::Op.new( :op('p6return'), QAST::Op.new( :op('getpayload'), QAST::Op.new( :op('exception') ) ) ));
             }
             if $!catch-handlers {
                 self.IMPL-ADD-HANDLER($handle, 'CATCH');
@@ -436,6 +491,25 @@ class RakuAST::Declaration
         nqp::die('allowed-scopes is not implemented on ' ~ self.HOW.name(self))
     }
 
+    method check-scope(RakuAST::Resolver $resolver, str $declaration) {
+        my $scope := self.scope;
+        my $ok := 0;
+        for self.IMPL-UNWRAP-LIST(self.allowed-scopes) {
+            if $_ eq $scope {
+                $ok := 1;
+                last;
+            }
+        }
+        self.add-sorry:
+            $resolver.build-exception: 'X::Declaration::Scope', :$scope, :$declaration
+            unless $ok;
+
+        if $scope eq 'our' && nqp::istype($resolver.find-attach-target('package'), RakuAST::Role) {
+            self.add-sorry:
+                $resolver.build-exception: 'X::Declaration::OurScopeInRole', :$declaration;
+        }
+    }
+
     # Gets the scope of this declaration.
     method scope() {
         my str $scope := $!scope;
@@ -472,6 +546,10 @@ class RakuAST::Declaration
 
     method declaration-kind() {
         'symbol'
+    }
+
+    method declaration-name() {
+        self.lexical-name
     }
 }
 
@@ -559,13 +637,16 @@ class RakuAST::Declaration::Mergeable {
         if $other.is-stub {
             # Source is a stub. We can safely merge the symbols
             # from source into the target that's importing them.
+            $other.defuse-stub if nqp::istype($other, RakuAST::Package);
             $loader.merge_globals($target.WHO, $source.WHO);
         }
         elsif self.is-stub {
             # The tricky case: here the interesting package is the
             # one in the module. So we merge the other way around
             # and install that as the result.
-            $loader.merge_globals($source.WHO, $target.WHO);
+            $*COMPILING_CORE_SETTING == 1
+                ?? $loader.merge_globals(nqp::getattr($source.WHO, Map, '$!storage'), nqp::getattr($target.WHO, Map, '$!storage'))
+                !! $loader.merge_globals($source.WHO, $target.WHO);
             self.set-value($source);
         }
         elsif nqp::can(self, 'lexical-name') && nqp::eqat(self.lexical-name, '&', 0) {
@@ -595,6 +676,19 @@ class RakuAST::Declaration::Mergeable {
 
             # "Latest wins" semantics for functions
             self.set-value($source);
+        }
+        elsif nqp::can($other, 'lexical-name') && $other.lexical-name eq '%?REQUIRE-SYMBOLS' {
+            # Nothing to do - the existing symbol suffices
+        }
+        elsif nqp::istype($other, RakuAST::VarDeclaration::Implicit::EnumValue) {
+            self.set-value(
+                $resolver.build-exception(
+                    'X::PoisonedAlias',
+                    :alias(self.lexical-name),
+                    :package-type<enum>,
+                    :package-name($other.value.HOW.name($other.value)),
+                ).Failure
+            );
         }
         else {
             $resolver.panic(
@@ -706,6 +800,9 @@ class RakuAST::Declaration::LexicalPackage
     }
 
     method set-value(Mu $compile-time-value is raw) {
+        if !$!package.is-stub && !nqp::istype($compile-time-value.HOW, Perl6::Metamodel::PackageHOW) {
+            $!package.defuse-stub;
+        }
         nqp::bindattr(self, RakuAST::Declaration::LexicalPackage,
             '$!compile-time-value', $compile-time-value);
     }
@@ -728,6 +825,10 @@ class RakuAST::Declaration::LexicalPackage
         my $value := $!compile-time-value;
         $context.ensure-sc($value);
         QAST::WVal.new( :$value )
+    }
+
+    method IMPL-TO-QAST(RakuAST::IMPL::QASTContext $context, *%opts) {
+        self.IMPL-LOOKUP-QAST($context)
     }
 }
 
@@ -786,9 +887,18 @@ class RakuAST::Lookup
     }
 
     method resolution() {
-        nqp::isconcrete($!resolution)
-            ?? $!resolution
-            !! nqp::die('This element has not been resolved. Type: ' ~ self.HOW.name(self))
+        if nqp::isconcrete($!resolution) {
+            $!resolution
+        }
+        else {
+            my $prefix := nqp::istype(self,RakuAST::Type::Simple)
+              ?? "'" ~ self.name.canonicalize ~ "'"
+              !! "This element";
+
+            nqp::die(
+              $prefix ~ ' has not been resolved. Type: ' ~ self.HOW.name(self)
+            );
+        }
     }
 
     method set-resolution(RakuAST::Declaration $resolution) {
@@ -818,6 +928,13 @@ class RakuAST::UndeclaredSymbolDescription::Routine
 {
     method IMPL-REPORT(RakuAST::Lookup $node, Mu $types, Mu $routines, Mu $other) {
         nqp::bindkey($routines, self.name, [$node.origin.as-match.line]);
+    }
+}
+class RakuAST::UndeclaredSymbolDescription::Type
+  is RakuAST::UndeclaredSymbolDescription
+{
+    method IMPL-REPORT(RakuAST::Lookup $node, Mu $types, Mu $routines, Mu $other) {
+        nqp::bindkey($types, self.name, [$node.origin.as-match.line]);
     }
 }
 
@@ -872,12 +989,12 @@ class RakuAST::PackageInstaller {
         RakuAST::Name $name,
         RakuAST::Package $current-package,
         Mu :$meta-object
-     ) {
+    ) {
+        my $orig-scope := $scope;
         my $target;
         my $final;
         my $lexical;
         my $type-object := nqp::eqaddr($meta-object, Mu) ?? self.stubbed-meta-object !! $meta-object;
-        my $pure-package-installation := nqp::istype(self, RakuAST::Package);
 
         my $illegal-pseudo-package := $name.contains-pseudo-package-illegal-for-declaration;
         $resolver.add-sorry: $resolver.build-exception:
@@ -889,11 +1006,9 @@ class RakuAST::PackageInstaller {
         if $name.is-identifier {
             $final := $name.canonicalize(:colonpairs(0));
             $lexical := $resolver.resolve-lexical-constant($final);
-            if $pure-package-installation || !$lexical {
-                $resolver.current-scope.merge-generated-lexical-declaration:
-                    :$resolver,
-                    self.IMPL-GENERATE-LEXICAL-DECLARATION($final, $meta-object);
-            }
+            $resolver.current-scope.merge-generated-lexical-declaration:
+                :$resolver,
+                self.IMPL-GENERATE-LEXICAL-DECLARATION($final, $meta-object);
             # If `our`-scoped, also put it into the current package.
             if $scope eq 'our' {
                 $target := $current-package;
@@ -908,13 +1023,14 @@ class RakuAST::PackageInstaller {
         else {
             my @parts := nqp::clone(self.IMPL-UNWRAP-LIST($name.parts));
             $final := nqp::pop(@parts).name;
+            nqp::shift(@parts) if nqp::istype(@parts[0], RakuAST::Name::Part::Empty);
             my $first := @parts[0].name;
             my $resolved := $resolver.partially-resolve-name-constant(RakuAST::Name.new(|@parts));
 
             if $resolved { # first parts of the name found
                 $resolved := self.IMPL-UNWRAP-LIST($resolved);
                 $target := $resolved[0];
-                if $scope eq 'our' && nqp::elems(@parts) == 1 && $resolved[2] eq 'lexical' {
+                if $scope eq 'our' && nqp::elems(@parts) >= 1 && $resolved[2] eq 'lexical' {
                     # Upgrade lexically imported top level package to global
                     ($resolver.get-global.WHO){$first} := $resolver.resolve-lexical($first).compile-time-value;
                 }
@@ -943,7 +1059,7 @@ class RakuAST::PackageInstaller {
                     RakuAST::Declaration::LexicalPackage.new:
                         :lexical-name($first),
                         :compile-time-value($target),
-                        :package($pure-package-installation ?? self !! $current-package);
+                        :package(self);
                 if $scope eq 'our' {
                     # TODO conflicts
                     my %stash := $resolver.IMPL-STASH-HASH($current-package);
@@ -970,7 +1086,13 @@ class RakuAST::PackageInstaller {
         }
         if $scope eq 'our' {
             if nqp::existskey(%stash, $final) && !(%stash{$final} =:= $type-object) {
-                nqp::setwho($type-object, %stash{$final}.WHO);
+                if nqp::istype(%stash{$final}.HOW, Perl6::Metamodel::PackageHOW) || $name.is-identifier || $orig-scope eq 'my' {
+                    nqp::setwho($type-object, %stash{$final}.WHO);
+                }
+                else {
+                    $resolver.add-sorry: $resolver.build-exception:
+                        'X::Redeclaration', :symbol($name.canonicalize);
+                }
             }
             %stash{$final} := $type-object;
         }

@@ -67,7 +67,7 @@ class RakuAST::Deparse {
     method block-open( --> "\{\n") { }
     method block-close(--> "\}\n") { }
 
-    method regex-open(                  --> '/ ')  { }
+    method regex-open(                  --> '/')  { }
     method regex-close(                 --> '/')   { }
     method regex-alternation(           --> '| ')  { }
     method regex-sequential-alternation(--> '|| ') { }
@@ -561,11 +561,18 @@ CODE
 #- A ---------------------------------------------------------------------------
 
     multi method deparse(RakuAST::ApplyInfix:D $ast --> Str:D) {
-        self.deparse($ast.left)
+        my str $deparsed = self.deparse($ast.left)
           ~ $.before-infix
           ~ self.deparse($ast.infix)
           ~ $.after-infix
-          ~ self.deparse($ast.right)
+          ~ self.deparse($ast.right);
+
+        if $ast.colonpairs -> @pairs {
+            "$deparsed @pairs.map({ self.deparse($_) }).join()"
+        }
+        else {
+            $deparsed
+        }
     }
 
     multi method deparse(RakuAST::ApplyDottyInfix:D $ast --> Str:D) {
@@ -761,6 +768,10 @@ CODE
           ~ $.parens-open
           ~ self.deparse($ast.named-arg-value)
           ~ $.parens-close
+    }
+
+    multi method deparse(RakuAST::ColonPairs:D $ast, Str $xsyn = "" --> Str:D) {
+        self.colonpairs($ast, $xsyn)
     }
 
     multi method deparse(
@@ -1357,6 +1368,12 @@ CODE
             @parts.push(':');
         }
 
+        if $ast.sub-signature -> $signature {
+            @parts.push(' (');
+            @parts.push(self.deparse($signature));
+            @parts.push(')');
+        }
+
         @parts = self.hsyn('param', @parts.join);
         if $ast.default -> $default {
             @parts.push(self.syn-infix-ws($.assign) ~ self.deparse($default));
@@ -1451,7 +1468,7 @@ CODE
     }
 
     multi method deparse(RakuAST::Postfix::Power:D $ast --> Str:D) {
-        $ast.power.Str(:superscript)
+        $ast.power.trans("0123456789-+i<>" => "⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺ⁱ", :delete)
     }
 
     multi method deparse(RakuAST::Postfix::Vulgar:D $ast --> Str:D) {
@@ -2603,7 +2620,9 @@ CODE
         }
 
         with $ast.argument {
-            $base ~ self.deparse($_)
+            my $deparsed := self.deparse($_);
+            $deparsed := "($deparsed)" unless $deparsed.starts-with('(');
+            $base ~ $deparsed
         }
         else {
             $base
@@ -2692,7 +2711,10 @@ CODE
           if $scope && $scope ne $ast.default-scope;
 
         @parts.push(self.hsyn("type",self.deparse($ast.name)));
-        @parts.push(self.hsyn("traitmod-of", self.deparse($_))) with $ast.of;
+        with $ast.of {
+            @parts.push(self.xsyn('trait', 'of'));
+            @parts.push(self.hsyn("traitmod-of", self.deparse($_)));
+        }
         @parts.push(self.hsyn("type", self.deparse($_))) for $ast.traits;
 
         with $ast.where {
@@ -2712,7 +2734,13 @@ CODE
     }
 
     multi method deparse(RakuAST::Var::Attribute::Public:D $ast --> Str:D) {
-        self.hsyn('var-public', $ast.name)
+        my str $deparsed = self.hsyn('var-public', $ast.name);
+        if $ast.args && $ast.args.args {
+            $deparsed ~ '(' ~ self.deparse($ast.args) ~ ')'
+        }
+        else {
+            $deparsed
+        }
     }
 
     multi method deparse(RakuAST::Var::Compiler::File:D $ast --> Str:D) {

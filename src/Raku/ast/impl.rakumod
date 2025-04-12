@@ -25,8 +25,9 @@ class RakuAST::IMPL::QASTContext {
     has List $.cleanup-tasks;
 
     has int $.is-nested;
+    has Mu $.language-revision; # Same type as in CORE-SETTING-REV
 
-    method new(Mu :$sc!, int :$precompilation-mode, :$setting) {
+    method new(Mu :$sc!, int :$precompilation-mode, :$setting, :$language-revision) {
         my $obj := nqp::create(self);
         nqp::bindattr($obj, RakuAST::IMPL::QASTContext, '$!sc', $sc);
         nqp::bindattr_i($obj, RakuAST::IMPL::QASTContext, '$!precompilation-mode', $precompilation-mode);
@@ -38,6 +39,7 @@ class RakuAST::IMPL::QASTContext {
         nqp::bindattr($obj, RakuAST::IMPL::QASTContext, '$!cleanup-tasks', []);
         nqp::bindattr_i($obj, RakuAST::IMPL::QASTContext, '$!is-nested', 0);
         nqp::bindattr($obj, RakuAST::IMPL::QASTContext, '$!setting', $setting);
+        nqp::bindattr($obj, RakuAST::IMPL::QASTContext, '$!language-revision', $language-revision);
         $obj
     }
 
@@ -54,8 +56,10 @@ class RakuAST::IMPL::QASTContext {
     }
 
     # The langauge version we're compiling.
-    # TODO implement this properly
-    method lang-version() { 'd' }
+    # TODO use revision internally
+    method lang-version() {
+        nqp::chr(98 + $!language-revision.Int)
+    }
 
     method is-moar() {
 #?if moar
@@ -91,8 +95,15 @@ class RakuAST::IMPL::QASTContext {
     # Run the passed fixup producer and add the QAST it returns to fixup tasks
     # only if we're not in pre-comp.
     method add-fixup-task(Mu $fixup-producer) {
-        # TODO conditional on if we're doing precomp
-        $!post-deserialize.push($fixup-producer());
+        unless self.is-precompilation-mode {
+            $!post-deserialize.push($fixup-producer());
+        }
+    }
+
+    method add-deserialize-task(Mu $deserialize-producer) {
+        if self.is-precompilation-mode {
+            $!post-deserialize.push($deserialize-producer());
+        }
     }
 
     # Run the passed QAST whether we are in a fixup or pre-comp'd deserialize
@@ -128,4 +139,7 @@ class RakuAST::IMPL::QASTContext {
 # Rakudo-specific class used for holding state used during interpretation of
 # simple code at BEGIN time.
 class RakuAST::IMPL::InterpContext {
+    method new() {
+        nqp::create(self)
+    }
 }

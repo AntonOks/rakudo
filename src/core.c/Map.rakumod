@@ -6,8 +6,10 @@ my class Map does Iterable does Associative { # declared in BOOTSTRAP
 
     # Calling self.new for the arguments case ensures that the right
     # descriptor will be added for typed hashes.
-    multi method new(Map:        --> Map:D) {
-        nqp::p6bindattrinvres(nqp::create(self),Map,'$!storage',nqp::hash)
+    multi method new(Map: --> Map:D) {
+        %_
+          ?? self.new(%_.pairs)
+          !! nqp::create(self)
     }
     multi method new(Map: *@args --> Map:D) {
         self.new.STORE(@args, :INITIALIZE)
@@ -191,21 +193,22 @@ my class Map does Iterable does Associative { # declared in BOOTSTRAP
     my class Iterate does Rakudo::Iterator::Mappy {
         method pull-one() {
             nqp::if(
-              $!iter,
+              (my $iter := $!iter),
               nqp::stmts(
-                nqp::shift($!iter),
-                Pair.new(nqp::iterkey_s($!iter), nqp::iterval($!iter))
+                nqp::shift($iter),
+                Pair.new(nqp::iterkey_s($iter), nqp::iterval($iter))
               ),
               IterationEnd
             )
         }
         method push-all(\target --> IterationEnd) {
+            my $iter := $!iter;
             nqp::while(
-              $!iter,
+              $iter,
               nqp::stmts(  # doesn't sink
-                 nqp::shift($!iter),
+                 nqp::shift($iter),
                  target.push(
-                   Pair.new(nqp::iterkey_s($!iter), nqp::iterval($!iter)))
+                   Pair.new(nqp::iterkey_s($iter), nqp::iterval($iter)))
               )
             )
         }
@@ -226,28 +229,30 @@ my class Map does Iterable does Associative { # declared in BOOTSTRAP
 
     my class KV does Rakudo::Iterator::Mappy-kv-from-pairs {
         method pull-one() is raw {
+            my $iter := $!iter;
             nqp::if(
               $!on,
               nqp::stmts(
                 ($!on= 0),
-                nqp::iterval($!iter)
+                nqp::iterval($iter)
               ),
               nqp::if(
-                $!iter,
+                $iter,
                 nqp::stmts(
                   ($!on= 1),
-                  nqp::iterkey_s(nqp::shift($!iter))
+                  nqp::iterkey_s(nqp::shift($iter))
                 ),
                 IterationEnd
               )
             )
         }
         method push-all(\target --> IterationEnd) {
+            my $iter := $!iter;
             nqp::while(  # doesn't sink
-              $!iter,
+              $iter,
               nqp::stmts(
-                target.push(nqp::iterkey_s(nqp::shift($!iter))),
-                target.push(nqp::iterval($!iter))
+                target.push(nqp::iterkey_s(nqp::shift($iter))),
+                target.push(nqp::iterval($iter))
               )
             )
         }
@@ -256,22 +261,24 @@ my class Map does Iterable does Associative { # declared in BOOTSTRAP
 
     my class AntiPairs does Rakudo::Iterator::Mappy {
         method pull-one() {
+            my $iter := $!iter;
             nqp::if(
-              $!iter,
+              $iter,
               nqp::stmts(
-                nqp::shift($!iter),
-                Pair.new( nqp::iterval($!iter), nqp::iterkey_s($!iter) )
+                nqp::shift($iter),
+                Pair.new( nqp::iterval($iter), nqp::iterkey_s($iter) )
               ),
               IterationEnd
             );
         }
         method push-all(\target --> IterationEnd) {
+            my $iter := $!iter;
             nqp::while(
-              $!iter,
+              $iter,
               nqp::stmts(  # doesn't sink
-                nqp::shift($!iter),
+                nqp::shift($iter),
                 target.push(
-                  Pair.new( nqp::iterval($!iter), nqp::iterkey_s($!iter) ))
+                  Pair.new( nqp::iterval($iter), nqp::iterkey_s($iter) ))
               )
             )
         }
@@ -547,7 +554,7 @@ ERROR
     }
 
     method hash() { self }
-    method clone(Map:D:) { self }
+    multi method clone(Map:D:) { self }
 
     multi method roll(Map:D:) {
         nqp::if(

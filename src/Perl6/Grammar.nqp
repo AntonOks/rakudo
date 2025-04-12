@@ -4075,6 +4075,7 @@ grammar Perl6::Grammar is HLL::Grammar does STD {
     # These are here to prevent us generating the candidates when parsing CORE.setting.
     token postcircumfix:sym<[; ]> { <!> }
     token postcircumfix:sym<{; }> { <!> }
+    token circumfix:sym<:{ }> { <!> }
 
     token postfix:sym<i>  { <sym> >> <O(|%methodcall)> }
 
@@ -4780,6 +4781,9 @@ if $*COMPILING_CORE_SETTING {
         self.set_actions($actions);
 
         $*W.install_lexical_symbol($*W.cur_lexpad(), '%?LANG', $*W.p6ize_recursive(%*LANG, :dynamic));
+
+        # If an outer $*GRAMMAR is specified, then set it here
+        try $*GRAMMAR := self;
 
         $*LANG := self;
         $*LEAF := self;

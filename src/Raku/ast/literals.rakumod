@@ -17,9 +17,16 @@ class RakuAST::Literal
         $obj
     }
 
+    # Attempt to convert given value to a RakuAST::xxxLiteral object,
+    # or return Mu if failed
     method from-value(Mu $value) {
-        my $typename := $value.HOW.name($value);
-        my $obj := nqp::create(RakuAST.WHO{$typename ~ 'Literal'});
+        my $typename  := $value.HOW.name($value);
+        my $classname := $typename ~ 'Literal';
+        my $obj := nqp::create(nqp::isconcrete($value)
+          && nqp::existskey(RakuAST.WHO,$classname)
+          ?? RakuAST.WHO{$classname}
+          !! RakuAST::Literal
+        );
         nqp::bindattr($obj, RakuAST::Literal, '$!value',    $value);
         nqp::bindattr($obj, RakuAST::Literal, '$!typename', $typename);
         $obj
@@ -41,8 +48,7 @@ class RakuAST::Literal
                RakuAST::Resolver $resolver,
       RakuAST::IMPL::QASTContext $context
     ) {
-        self.add-worry: $resolver.build-exception: 'X::AdHoc',
-            payload => 'Useless use of constant ' ~ self.type-name ~ ' ' ~ $!value.gist ~ ' in sink context'
+        self.add-sunk-worry($resolver, 'constant ' ~ self.type-name ~ ' ' ~ (self.origin ?? self.origin.Str !! $!value.gist))
             if self.sunk;
     }
 
@@ -63,7 +69,7 @@ class RakuAST::Literal
         $type
     }
 
-    # default for non int/str/num literals
+    # default for non int/str/num/bool literals
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         my $value := $!value;
         $context.ensure-sc($value);
@@ -126,14 +132,6 @@ class RakuAST::VersionLiteral
   is RakuAST::Literal
 { }
 
-class RakuAST::ListLiteral
-  is RakuAST::Literal
-{ }
-
-class RakuAST::MapLiteral
-  is RakuAST::Literal
-{ }
-
 # A StrLiteral is a basic string literal without any kind of interpolation
 # taking place. It may be placed in the tree directly, but a compiler will
 # typically emit it in a quoted string wrapper.
@@ -156,7 +154,6 @@ class RakuAST::StrLiteral
 # that they are specified here).
 class RakuAST::QuotedString
   is RakuAST::ColonPairish
-  is RakuAST::CheckTime
   is RakuAST::Term
   is RakuAST::ImplicitLookups
 {
@@ -199,7 +196,7 @@ class RakuAST::QuotedString
     }
 
     method canonicalize() {
-        self.IMPL-QUOTE-VALUE(self.literal-value // '')
+        self.IMPL-QUOTE-VALUE(self.literal-value(:force) // '')
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
@@ -229,8 +226,7 @@ class RakuAST::QuotedString
       RakuAST::IMPL::QASTContext $context
     ) {
         my $value := self.literal-value;
-        self.add-worry: $resolver.build-exception: 'X::AdHoc',
-            payload => 'Useless use of constant ' ~ self.type-name ~ ' ' ~ $value.gist ~ ' in sink context'
+        self.add-sunk-worry($resolver, 'constant ' ~ self.type-name ~ ' ' ~ (self.origin ?? self.origin.Str !! $value.gist))
             if self.sunk && $value;
     }
 
@@ -268,13 +264,36 @@ class RakuAST::QuotedString
         }
     }
 
+    method IMPL-WORDS-AUTODEREF(str $str) {
+        my $result := nqp::list();
+        my int $pos := 0;
+        my int $eos := nqp::chars($str);
+        my int $ws;
+        my $nbsp := nqp::hash(
+            "\x00A0", True,
+            "\x2007", True,
+            "\x202F", True,
+            "\xFEFF", True,
+        );
+        while ($pos := nqp::findnotcclass(nqp::const::CCLASS_WHITESPACE, $str, $pos, $eos)) < $eos {
+            # Search for another white space character as long as we hit non-breakable spaces.
+            $ws := $pos;
+            $ws++ while nqp::existskey($nbsp,
+                nqp::substr($str, $ws := nqp::findcclass(nqp::const::CCLASS_WHITESPACE,
+                    $str, $ws, $eos), 1));
+            nqp::push($result, nqp::box_s(nqp::substr($str, $pos, $ws - $pos), Str));
+            $pos := $ws;
+        }
+        $result
+    }
+
     method IMPL-PROCESS-PART($result, $part) {
         return Nil if $part =:= Nil;
         for $!processors {
             if $_ eq 'words' {
                 return Nil unless nqp::istype($part, Str);
                 my @parts;
-                for $part.WORDS_AUTODEREF.FLATTENABLE_LIST {
+                for self.IMPL-WORDS-AUTODEREF($part) {
                     nqp::push(@parts, $_);
                 }
                 $part := @parts;
@@ -283,13 +302,16 @@ class RakuAST::QuotedString
                 return Nil unless nqp::istype($part, Str);
                 #TODO actually implement special handling of « »
                 my @parts;
-                for $part.WORDS_AUTODEREF.FLATTENABLE_LIST {
+                for self.IMPL-WORDS-AUTODEREF($part) {
                     nqp::push(@parts, $_);
                 }
                 $part := @parts;
             }
             elsif $_ eq 'val' {
-                my $val := self.get-implicit-lookups.AT-POS(0).resolution.compile-time-value;
+                my $val-lookup := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0];
+                my $val := $val-lookup.is-resolved
+                    ?? $val-lookup.resolution.compile-time-value
+                    !! -> $val { $val };
                 $part := $val(nqp::hllizefor($part, 'Raku'));
             }
             elsif $_ eq 'heredoc' {
@@ -306,7 +328,7 @@ class RakuAST::QuotedString
             }
         }
         elsif nqp::istype($part, List) {
-            for $part.FLATTENABLE_LIST {
+            for self.IMPL-UNWRAP-LIST($part) {
                 nqp::push($result, $_);
             }
         }
@@ -318,7 +340,7 @@ class RakuAST::QuotedString
 
     # Tries to get a literal value for the quoted string. If that is not
     # possible, returns Nil.
-    method literal-value() {
+    method literal-value(:$force, :$stringify) {
         my @parts;
         for $!segments {
             if nqp::istype($_, RakuAST::StrLiteral) {
@@ -341,9 +363,12 @@ class RakuAST::QuotedString
             }
             elsif nqp::istype($_, RakuAST::Var::Lexical)
                 && $_.is-resolved
-                && nqp::istype($_.resolution, RakuAST::VarDeclaration::Constant)
+                && ($force || nqp::istype($_.resolution, RakuAST::VarDeclaration::Constant))
             {
                 self.IMPL-PROCESS-PART(@parts, $_.resolution.compile-time-value.Str) || return Nil;
+            }
+            elsif $force && nqp::istype($_, RakuAST::Block) && $_.body.IMPL-CAN-INTERPRET {
+                nqp::push(@parts, ~$_.body.IMPL-INTERPRET(RakuAST::IMPL::InterpContext.new));
             }
             else {
                 return Nil;
@@ -359,11 +384,11 @@ class RakuAST::QuotedString
                 $return-list := 0;
             }
         }
-        return $return-list
+        return $return-list && !$stringify
             ?? nqp::hllizefor(@parts, 'Raku')
             !! nqp::elems(@parts) == 1
                 ?? @parts[0] # need to preserve val() result
-                !! nqp::box_s(nqp::join('', @parts), Str);
+                !! nqp::box_s(nqp::join($stringify ?? ' ' !! '', @parts), Str);
     }
 
     # Checks if this is an empty words list, as seen in a form like %h<>.
@@ -397,7 +422,7 @@ class RakuAST::QuotedString
 
             # format string
             if $!processors && $!processors[0] eq 'format' {
-                my $Format := self.get-implicit-lookups.AT-POS(0).resolution.compile-time-value;
+                my $Format := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.compile-time-value;
 
 # The below code "should" work, but doesn't because references to internal
 # subs (such as "str-right-justified") appear to be QASTed correctly, but
@@ -443,7 +468,7 @@ class RakuAST::QuotedString
                     $inter-qast := QAST::Op.new( :op('call'), $inter-qast );
                 }
                 @segment-asts.push(QAST::Op.new(
-                    :op('callmethod'), :name('Str'),
+                    :op('callmethod'), :name('Stringy'),
                     $inter-qast
                 ));
             }
@@ -530,7 +555,7 @@ class RakuAST::QuotedString
             }
             elsif $_ eq 'val' {
                 my $name :=
-                  self.get-implicit-lookups.AT-POS(0).resolution.lexical-name;
+                  self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.lexical-name;
                 $qast := QAST::Op.new(:op('call'), :$name, $qast);
             }
             elsif $_ eq 'exec' {
@@ -544,7 +569,7 @@ class RakuAST::QuotedString
                 );
             }
             elsif $_ eq 'format' {
-                my $Format := self.get-implicit-lookups.AT-POS(0).resolution.compile-time-value;
+                my $Format := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.compile-time-value;
                 $qast := QAST::Op.new(
                   :op('callmethod'), :name('new'),
                   QAST::WVal.new( :value($Format)),
@@ -567,6 +592,14 @@ class RakuAST::QuotedString
 
     method IMPL-IS-CONSTANT() {
         nqp::isconcrete(self.literal-value) ?? True !! False
+    }
+
+    method has-compile-time-value() {
+        nqp::isconcrete(self.literal-value) ?? True !! False
+    }
+
+    method maybe-compile-time-value() {
+        self.literal-value
     }
 
     method IMPL-CAN-INTERPRET() {

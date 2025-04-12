@@ -1,5 +1,6 @@
 use Perl6::Metamodel;
 use QRegex;
+use QAST;
 
 # Here we start to piece together the top of the object model hierarchy.
 # We can't just declare these bits in CORE.setting with normal Raku
@@ -105,6 +106,7 @@ my stub IntMultidimRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
 my stub UIntMultidimRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
 my stub NumMultidimRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
 my stub StrMultidimRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
+my stub BOOTLanguageRevision metaclass Perl6::Metamodel::ClassHOW { ... };
 
 #?if js
 my stub Int64LexRef metaclass Perl6::Metamodel::NativeRefHOW { ... };
@@ -2085,7 +2087,12 @@ BEGIN {
         # The value can also be a string that will be shown in the error
         # message if this named argument is *not* specified.  Make sure it
         # is added to the serialization context.
-        $*W.add_object_if_no_sc($value);  # XXX RakuAST
+        if ($*W) {
+            $*W.add_object_if_no_sc($value);
+        }
+        elsif ($*CU) {
+            $*CU.context.ensure-sc($value);
+        }
         nqp::bindattr($self, Attribute, '$!required', $value);
         nqp::hllboolfor(1, "Raku")
     }));
@@ -3567,7 +3574,7 @@ BEGIN {
         method push_outer_edge($node) {
             nqp::push($!edges, $node);
             nqp::bindattr_i($node, Node, '$!edges_in',
-              nqp::getattr($node, Node, '$!edges_in') + 1
+              nqp::getattr_i($node, Node, '$!edges_in') + 1
             );
         }
 
@@ -3766,6 +3773,7 @@ BEGIN {
         $i := 0;
         while $i < $m {
             my $node_i := nqp::atpos(@graph, $i);
+            my $node_i_possible := $node_i.possible;
 
             my int $j;
             while $j < $m {
@@ -3773,7 +3781,7 @@ BEGIN {
                     my $node_j := nqp::atpos(@graph, $j);
 
                     $node_i.push_outer_edge($node_j)
-                      if is_narrower($node_i.possible, $node_j.possible);
+                      if is_narrower($node_i_possible, $node_j.possible);
                 }
                 ++$j;
             }
@@ -5399,6 +5407,27 @@ BEGIN {
 
     Stash.HOW.compose_repr(Stash);
 
+#- BOOTLanguageRevision -------------------------------------------------------------------------
+# class BOOTLanguageRevision is Any {
+
+    BOOTLanguageRevision.HOW.add_parent(Int, Any);
+
+    BOOTLanguageRevision.HOW.add_attribute(BOOTLanguageRevision, BOOTSTRAPATTR.new(
+      :name<$!language-revision>, :type(int), :box_target(1), :package(BOOTLanguageRevision))
+    );
+
+    BOOTLanguageRevision.HOW.set_boolification_mode(BOOTLanguageRevision, 6);
+    BOOTLanguageRevision.HOW.publish_boolification_spec(BOOTLanguageRevision);
+
+    BOOTLanguageRevision.HOW.add_method(BOOTLanguageRevision, 'Int',
+      nqp::getstaticcode(sub ($self) {
+        $self := nqp::decont($self);
+
+        nqp::box_i(nqp::getattr_i($self, BOOTLanguageRevision, '$!language-revision'), Int);
+    }));
+
+    BOOTLanguageRevision.HOW.compose_repr(BOOTLanguageRevision);
+
 #- (epilogue) ------------------------------------------------------------------
 
     # Configure the stash type.
@@ -6122,5 +6151,10 @@ nqp::gethllsym('Raku', 'JavaModuleLoader').set_interop_loader(-> {
 });
 Perl6::Metamodel::JavaHOW.pretend_to_be([Any, Mu]);
 #?endif
+
+# Make QAST::Regex and QRegex available to early setting where module loading
+# does not yet work.
+nqp::bindhllsym('Raku', 'QASTRegex', QAST::Regex);
+nqp::bindhllsym('Raku', 'QRegex', QRegex);
 
 # vim: expandtab sw=4

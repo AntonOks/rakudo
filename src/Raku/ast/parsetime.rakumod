@@ -25,12 +25,19 @@ class RakuAST::ParseTime
     # Called when a BEGIN-time construct needs to evaluate code. Tries to
     # interpret simple things to avoid the cost of compilation.
     method IMPL-BEGIN-TIME-EVALUATE(RakuAST::Node $code, RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
-        $code.IMPL-CHECK($resolver, $context, False);
         if $code.IMPL-CAN-INTERPRET {
             $code.IMPL-INTERPRET(RakuAST::IMPL::InterpContext.new)
         }
         elsif nqp::istype($code, RakuAST::Code) {
-            $code.meta-object;
+            my $code-obj := $code.meta-object;
+
+            my $compstuff := nqp::getattr($code-obj, Code, '@!compstuff');
+            if $compstuff {
+                # Force compilation here to get at errors earlier
+                $compstuff[1]();
+            }
+
+            $code-obj
         }
         elsif nqp::istype($code, RakuAST::Expression) {
             my $thunk := RakuAST::ExpressionThunk.new;

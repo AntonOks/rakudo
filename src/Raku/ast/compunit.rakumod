@@ -7,6 +7,7 @@ class RakuAST::CompUnit
   is RakuAST::AttachTarget
   is RakuAST::ScopePhaser
   is RakuAST::BeginTime
+  is RakuAST::CheckTime
 {
     has RakuAST::StatementList $.statement-list;
     has RakuAST::Block $.mainline;
@@ -32,6 +33,7 @@ class RakuAST::CompUnit
     has int $.precompilation-mode;
     has Mu $!export-package;
     has Mu $.herestub-queue;
+    has int $!explicit-ctxsave;
     has RakuAST::IMPL::QASTContext $.context;
     has RakuAST::Resolver $!resolver;
 
@@ -74,14 +76,19 @@ class RakuAST::CompUnit
 
         nqp::bindattr_i($obj, RakuAST::CompUnit, '$!precompilation-mode',
           $precompilation-mode ?? 1 !! 0);
-        nqp::bindattr($obj, RakuAST::CompUnit, '$!pod-content', Array.new);
+        nqp::bindattr_i($obj, RakuAST::CompUnit, '$!explicit-ctxsave', 0);
+        nqp::bindattr($obj, RakuAST::CompUnit, '$!pod-content', nqp::create(Array));
         nqp::bindattr($obj, RakuAST::CompUnit, '$!data-content', nqp::null);
         nqp::bindattr($obj, RakuAST::CompUnit, '$!herestub-queue', []);
         nqp::bindattr($obj, RakuAST::CompUnit, '$!resolver', $resolver);
 
+        if $*COMPILING_CORE_SETTING == 1 {
+            Perl6::Metamodel::Configuration.set_language_revision_type(BOOTLanguageRevision);
+        }
+
         # If CompUnit's language revision is not set explicitly then guess it
         nqp::bindattr($obj, RakuAST::CompUnit, '$!language-revision',
-          $language-revision
+          $language-revision := $language-revision
             ?? Perl6::Metamodel::Configuration.language_revision_object($language-revision)
             !! nqp::isconcrete(
                  my $setting-rev := nqp::getlexrelcaller(
@@ -108,7 +115,7 @@ class RakuAST::CompUnit
             nqp::pushcompsc($sc);
             nqp::bindattr($obj, RakuAST::CompUnit, '$!sc', $sc);
             nqp::bindattr($obj, RakuAST::CompUnit, '$!context',
-              RakuAST::IMPL::QASTContext.new(:$sc, :$precompilation-mode, :$setting));
+              RakuAST::IMPL::QASTContext.new(:$sc, :$precompilation-mode, :$setting, :$language-revision));
             nqp::bindattr($obj, RakuAST::CompUnit, '$!pod',
               RakuAST::VarDeclaration::Implicit::Doc::Pod.new);
             nqp::bindattr($obj, RakuAST::CompUnit, '$!data',
@@ -245,6 +252,10 @@ class RakuAST::CompUnit
         self.IMPL-WRAP-LIST(['compunit'])
     }
 
+    method set-explicit-ctxsave() {
+        nqp::bindattr_i(self, RakuAST::CompUnit, '$!explicit-ctxsave', 1);
+    }
+
     # Set the pod content at the indicated position
     method set-pod-content(int $i, $pod) {
 
@@ -278,7 +289,7 @@ class RakuAST::CompUnit
         self.add-cu-phaser($!init-phasers, $phaser);
     }
 
-    method add-check-phaser(Code $phaser) {
+    method add-check-phaser(RakuAST::StatementPrefix::Phaser::Check $phaser) {
         self.add-cu-phaser($!check-phasers, $phaser);
     }
 
@@ -332,7 +343,28 @@ class RakuAST::CompUnit
         nqp::findmethod(RakuAST::LexicalScope, 'PERFORM-CHECK')(self, $resolver, $context);
 
         while $!check-phasers {
-            nqp::pop($!check-phasers)();
+            my $check-phaser := nqp::pop($!check-phasers);
+            {
+                if nqp::istype($check-phaser, RakuAST::StatementPrefix::Phaser::Check) {
+                    $check-phaser.run($resolver, $context);
+                }
+                else {
+                    $check-phaser();
+                }
+                CATCH {
+                    my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
+                    my $exception := $_;
+                    my $BeginTime := $lookups[2].resolution.compile-time-value;
+                    my $coercer := $lookups[3].resolution.compile-time-value;
+                    $exception := $coercer($_);
+                    my $wrapped := $BeginTime.new(:$exception, :use-case('evaluating a CHECK'));
+                    if nqp::istype($check-phaser, RakuAST::StatementPrefix::Phaser::Check) && (my $origin := $check-phaser.origin) {
+                        my $origin-match := $origin.as-match;
+                        $wrapped.SET_FILE_LINE($origin-match.file, $origin-match.line);
+                    }
+                    $wrapped.throw;
+                }
+            }
         }
     }
 
@@ -342,11 +374,15 @@ class RakuAST::CompUnit
                 'CompUnit', 'RepositoryRegistry',
             )),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&FATALIZE')),
+            RakuAST::Type::Setting.new(RakuAST::Name.from-identifier-parts(
+                'X', 'Comp', 'BeginTime'
+            )),
+            RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&COMP_EXCEPTION')),
         ])
     }
 
     method IMPL-FATALIZE {
-        self.get-implicit-lookups.AT-POS(1).resolution.compile-time-value;
+        self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[1].resolution.compile-time-value;
     }
 
     method PRODUCE-IMPLICIT-DECLARATIONS() {
@@ -355,11 +391,15 @@ class RakuAST::CompUnit
 
         # If we're not in an EVAL, we should produce a GLOBAL package and set
         # it as the current package.
-        unless $!is-eval {
+        if $!is-eval {
+            add(RakuAST::VarDeclaration::Implicit::BlockTopic.new(:!parameter));
+        }
+        else {
             my $global := RakuAST::Package.new(
               how  => $!global-package-how,
               name => RakuAST::Name.from-identifier('GLOBAL')
             );
+            $global.meta-object; # Ensure GLOBAL is composed right away
 
             add($global);
             add(RakuAST::VarDeclaration::Implicit::Constant.new(
@@ -375,6 +415,8 @@ class RakuAST::CompUnit
             add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$!')));
             add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$_')));
         }
+
+        add(RakuAST::VarDeclaration::Implicit::Cursor.new());
 
         add(RakuAST::VarDeclaration::Implicit::Constant.new(
           name => '$?LANGUAGE-REVISION', value => $!language-revision.Int
@@ -404,7 +446,7 @@ class RakuAST::CompUnit
         $top-level.annotate('IN_DECL', $!is-eval ?? 'eval' !! 'mainline');
         my @pre-deserialize;
         nqp::push(@pre-deserialize, self.IMPL-SETTING-LOADING-QAST($top-level, $!setting-name))
-            if $!setting-name;
+            if $!setting-name && $!setting-name ne 'NULL.c';
 
         unless $!is-eval {
             my $global_install := QAST::Op.new(
@@ -465,7 +507,7 @@ class RakuAST::CompUnit
             :post_deserialize($context.is-nested ?? [] !! $context.post-deserialize()),
             :repo_conflict_resolver(QAST::Op.new(
                 :op('callmethod'), :name('resolve_repossession_conflicts'),
-                self.get-implicit-lookups.AT-POS(0).IMPL-TO-QAST($context) )),
+                self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].IMPL-TO-QAST($context) )),
             # If this unit is loaded as a module, we want it to automatically
             # execute the mainline code above after all other initializations
             # have occurred.
@@ -562,6 +604,46 @@ class RakuAST::CompUnit
     }
 
     method IMPL-QAST-CTXSAVE(RakuAST::IMPL::QASTContext $context) {
+        if $!explicit-ctxsave {
+            QAST::Op.new(:op('null'))
+        }
+        else {
+            RakuAST::CtxSave.IMPL-TO-QAST($context)
+        }
+    }
+
+    method IMPL-ADD-ENTER-PHASERS-TO-QAST(QAST::Node $qast, QAST::Node $enter-setup) {
+        $qast[2][2].push($enter-setup); # Add them after INIT phasers
+    }
+
+    method generated-global() {
+        nqp::die('No generated global in an EVAL-mode compilation unit') if $!is-eval;
+        self.IMPL-UNWRAP-LIST(self.get-implicit-declarations)[0].compile-time-value
+    }
+
+    method visit-children(Code $visitor) {
+        $visitor($!mainline);
+        $visitor($!statement-list);
+        $visitor($!pod)     if $!pod;
+        $visitor($!data)    if $!data;
+        $visitor($!finish)  if $!finish;
+        $visitor($!rakudoc) if $!rakudoc;
+    }
+}
+
+class RakuAST::CtxSave
+  is RakuAST::ParseTime
+  is RakuAST::Term
+{
+    method new() {
+        nqp::create(self)
+    }
+
+    method PERFORM-PARSE(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        $resolver.find-attach-target('compunit').set-explicit-ctxsave;
+    }
+
+    method IMPL-TO-QAST(RakuAST::IMPL::QASTContext $context) {
         QAST::Stmts.new(
             QAST::Op.new(
                 :op('bind'),
@@ -585,24 +667,6 @@ class RakuAST::CompUnit
                         :op('callmethod'), :name('ctxsave'),
                         QAST::Var.new( :name('ctxsave'), :scope('local')
                     )))))
-    }
-
-    method IMPL-ADD-ENTER-PHASERS-TO-QAST(QAST::Node $qast, QAST::Node $enter-setup) {
-        $qast[2][2].push($enter-setup); # Add them after INIT phasers
-    }
-
-    method generated-global() {
-        nqp::die('No generated global in an EVAL-mode compilation unit') if $!is-eval;
-        self.IMPL-UNWRAP-LIST(self.get-implicit-declarations)[0].compile-time-value
-    }
-
-    method visit-children(Code $visitor) {
-        $visitor($!mainline);
-        $visitor($!statement-list);
-        $visitor($!pod)     if $!pod;
-        $visitor($!data)    if $!data;
-        $visitor($!finish)  if $!finish;
-        $visitor($!rakudoc) if $!rakudoc;
     }
 }
 
@@ -748,5 +812,28 @@ class RakuAST::LiteralBuilder {
             nqp::bindattr_i(self,RakuAST::LiteralBuilder,'$!has-cached-complex',1);
         }
         $!cached-complex.new($real, $imaginary)
+    }
+}
+
+class RakuAST::BOOTException {
+    has Str $!message;
+    has Hash $!opts;
+    method new(Str $message, %opts) {
+        my $obj := nqp::create(self);
+        nqp::bindattr($obj, RakuAST::BOOTException, '$!message', $message);
+        nqp::bindattr($obj, RakuAST::BOOTException, '$!opts', %opts);
+        $obj
+    }
+    method message() {
+        my $message := $!message;
+        $message := "$message(";
+        for $!opts {
+            $message := $message ~ $_.key ~ " => " ~ ((try $_.value.gist) // (try $_.value.Str) // '<unknown>') ~ ", ";
+        }
+        $message := "$message)";
+        $message
+    }
+    method throw() {
+        nqp::die($!message);
     }
 }

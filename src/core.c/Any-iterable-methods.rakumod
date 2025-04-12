@@ -1361,22 +1361,24 @@ Consider using a block if any of these are necessary for your mapping code."
           !! fail("Expected '" ~ $type.^name ~ "' but got '" ~ self.^name ~ "'")
     }
     multi method are(Any:D: Mu:U $type --> Bool:D) {
-        my int $i;
-        my $iterator := self.iterator;
+        unless nqp::eqaddr(nqp::decont($type),Mu) {
+            my int $i;
+            my $iterator := self.iterator;
 
-        nqp::until(
-          nqp::eqaddr((my $pulled := $iterator.pull-one),IterationEnd),
-          nqp::unless(
-            nqp::istype($pulled.WHAT,$type),
-            fail("Expected '"
-              ~ $type.^name
-              ~ "' but got '"
-              ~ $pulled.^name
-              ~ "' in element $i"
-            ),
-            ++$i
-          )
-        );
+            nqp::until(
+              nqp::eqaddr((my $pulled := $iterator.pull-one),IterationEnd),
+              nqp::unless(
+                nqp::istype($pulled.WHAT,$type),
+                fail("Expected '"
+                  ~ $type.^name
+                  ~ "' but got '"
+                  ~ $pulled.^name
+                  ~ "' in element $i"
+                ),
+                ++$i
+              )
+            );
+        }
 
         True
     }
@@ -1433,7 +1435,25 @@ Consider using a block if any of these are necessary for your mapping code."
 
     proto method deepmap(|) is nodal {*}
     multi method deepmap(Associative:D: &op) {
-        self.new.STORE: self.keys, self.values.deepmap(&op), :INITIALIZE
+        self.new.STORE: self.map({
+            my $value := .value;
+
+            # Need recursing semantics
+            if nqp::istype($value,Iterable) {
+                $value := $value.deepmap(&op);
+                if $value.elems -> int $elems {
+                    $value := $value.head
+                      if $elems == 1 && nqp::istype($value,Positional);
+                }
+            }
+
+            # No deep semantics needed
+            else {
+                $value := op($value);
+            }
+
+            Pair.new(.key, $value) unless nqp::eqaddr($value,Empty);
+        }), :INITIALIZE
     }
     multi method deepmap(&op) {
         if nqp::istype(&op,Block)
@@ -1493,10 +1513,20 @@ Consider using a block if any of these are necessary for your mapping code."
           ),
           :nohandler
         );
-        nqp::p6bindattrinvres(
-          nqp::if(nqp::istype(self,List),self,List).new, # keep subtypes of List
-          List,'$!reified',buffer
-        )
+
+        if nqp::eqaddr(self.WHAT,List) {
+            buffer.List
+        }
+        elsif nqp::eqaddr(self.WHAT,Slip) {
+            buffer.Slip
+        }
+        else {
+            my $result := buffer.List;
+            if nqp::can(self,'STORE') {
+                $result := $_ with try self.new($result);
+            }
+            $result
+        }
     }
 
     proto method duckmap(|) is nodal {*}
@@ -1586,6 +1616,7 @@ multi sub infix:<min>(num $a, num $b) {
 multi sub infix:<min>(+args is raw) { args.min }
 
 proto sub min(|) is pure {*}
+multi sub min(Range:D $range, *%_) { $range.min(|%_) }
 multi sub min(+args, :&by!, *%_) { args.min(&by, |%_) }
 multi sub min(+args, *%_)        { args.min(|%_)      }
 
@@ -1608,6 +1639,7 @@ multi sub infix:<max>(num $a, num $b) {
 multi sub infix:<max>(+args) { args.max }
 
 proto sub max(|) is pure {*}
+multi sub max(Range:D $range, *%_) { $range.max(|%_) }
 multi sub max(+args, :&by!, *%_) { args.max(&by, |%_) }
 multi sub max(+args, *%_)        { args.max(|%_)      }
 

@@ -2,6 +2,7 @@
 class RakuAST::TraitTarget {
     has Mu $!traits;
     has List $!sorries;
+    has List $!worries;
 
     # Set the list of traits on this declaration.
     method set-traits(List $traits) {
@@ -39,19 +40,54 @@ class RakuAST::TraitTarget {
         if $!sorries {
             self.add-sorry($_) for $!sorries;
         }
+        if $!worries {
+            self.add-worry($_) for $!worries;
+        }
     }
 
     # Apply all traits (and already applied will not be applied again).
     method apply-traits(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context, RakuAST::TraitTarget $target, *%named) {
         if $!traits {
+            my constant is-traits-to-warn-on-duplicate := nqp::hash(
+                'tighter',  1,  'looser', 1,  'equiv', 1,  'rw',   1,  'default', 1,
+                'readonly', 1,  'raw',    1,  'assoc', 1,  'pure', 1,  'export',  1,
+                'item', 1
+            );
+            my %seen;
             for $!traits {
                 $_.apply($resolver, $context, $target, |%named) unless $_.applied;
                 CATCH {
                     nqp::bindattr(self, RakuAST::TraitTarget, '$!sorries', []) unless nqp::isconcrete($!sorries);
                     my $ex := nqp::getpayload($_);
-                    $ex := $resolver.build-exception: 'X::AdHoc', :payload(nqp::getmessage($_))
-                        unless nqp::isconcrete($ex);
+                    if $ex {
+                        my $XUndeclaredSymbols := $resolver.resolve-name-constant-in-setting(
+                            RakuAST::Name.from-identifier-parts('X', 'Inheritance', 'UnknownParent'));
+                        if nqp::istype($ex, $XUndeclaredSymbols.compile-time-value) {
+                            for $resolver.suggest-typename($ex.parent) {
+                                $ex.suggestions.push($_)
+                            }
+                        }
+                    }
+                    else {
+                        $ex := $resolver.build-exception: 'X::AdHoc', :payload(nqp::getmessage($_))
+                            unless nqp::isconcrete($ex);
+                    }
                     nqp::push($!sorries, $ex);
+                }
+                CONTROL {
+                    if nqp::getextype($_) == nqp::const::CONTROL_WARN {
+                        nqp::bindattr(self, RakuAST::TraitTarget, '$!worries', []) unless nqp::isconcrete($!worries);
+                        my $ex := nqp::getpayload($_);
+                        $ex := $resolver.build-exception: 'X::AdHoc', :payload(nqp::getmessage($_))
+                            unless nqp::isconcrete($ex);
+                        nqp::push($!worries, $ex);
+                        nqp::resume($_);
+                    }
+                    nqp::rethrow($_);
+                }
+                my $name := (try $_.name.canonicalize) // '';
+                if is-traits-to-warn-on-duplicate{$name} && %seen{$name}++ {
+                    $resolver.add-worry: $resolver.build-exception: 'X::AdHoc', :payload("Duplicate '" ~ $_.IMPL-TRAIT-NAME() ~ " $name' trait");
                 }
             }
         }
@@ -113,7 +149,7 @@ class RakuAST::Trait
             }
             $args.IMPL-BEGIN($resolver, $context);
             $target.IMPL-BEGIN-TIME-CALL(
-              self.get-implicit-lookups.AT-POS(0),
+              self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0],
               $args,
               $resolver,
               $context
@@ -140,9 +176,11 @@ class RakuAST::Trait::Is
         $obj
     }
 
-    method new-from-type(RakuAST::Type :$type!) {
+    method new-from-type(RakuAST::Type :$type!, RakuAST::Circumfix :$argument) {
         my $obj := nqp::create(self);
         nqp::bindattr($obj, RakuAST::Trait::Is, '$!type', $type);
+        nqp::bindattr($obj, RakuAST::Trait::Is, '$!argument',
+            $argument // RakuAST::Circumfix);
         $obj
     }
 
@@ -166,6 +204,7 @@ class RakuAST::Trait::Is
         my @args := [$target];
         if $!type {
             @args.push($!type);
+            @args.push($!argument) if $!argument;
         }
         else {
             my $key := $!name.canonicalize;
@@ -305,5 +344,27 @@ class RakuAST::Trait::Handles
 
     method visit-children(Code $visitor) {
         $visitor($!term);
+    }
+}
+
+class RakuAST::Trait::Trusts
+  is RakuAST::Trait
+{
+    has RakuAST::Type $.type;
+
+    method new(RakuAST::Type :$type!) {
+        my $obj := nqp::create(self);
+        nqp::bindattr($obj, RakuAST::Trait::Trusts, '$!type', $type);
+        $obj
+    }
+
+    method IMPL-TRAIT-NAME() { 'trusts' }
+
+    method IMPL-TRAIT-ARGS(RakuAST::Resolver $resolver, RakuAST::Node $target) {
+        RakuAST::ArgList.new($target, $!type)
+    }
+
+    method visit-children(Code $visitor) {
+        $visitor($!type) if $!type;
     }
 }

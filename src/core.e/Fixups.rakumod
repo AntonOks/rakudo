@@ -86,10 +86,19 @@ augment class Cool {
 
 #-------------------------------------------------------------------------------
 augment class Date {
-    multi method DateTime(
-      Date:D: :$timezone = $*TZ --> DateTime:D
-    ) is revision-gated("6.e")  {
+    multi method DateTime(Date:D:
+      :$timezone = $*TZ
+    ) is revision-gated("6.e") {
         DateTime.new(:$!year, :$!month, :$!day, :$timezone)
+    }
+}
+
+#-------------------------------------------------------------------------------
+augment class Instant {
+    multi method DateTime(Instant:D:
+      :$timezone = $*TZ
+    ) is revision-gated("6.e") {
+        DateTime.new(self, :$timezone)
     }
 }
 
@@ -115,6 +124,16 @@ augment class Int {
     proto method pick(|) {*}
     multi method pick() { nqp::rand_I(self,Int) }
     multi method pick($count) { (^self).pick($count) }
+
+    # Return Failure on unassigned codepoints
+    multi method uniname(Int:D: --> Str:D) is default {
+        nqp::islt_I(self,0)       # (bigint) negative number?
+          ?? '<illegal>'
+          !! nqp::isbig_I(self)
+               || nqp::iseq_s(nqp::getuniname(self),'<unassigned>')
+            ?? Failure.new("Unassigned codepoint: 0x" ~ self.base(16))
+            !! nqp::getuniname(self)
+    }
 }
 
 #-------------------------------------------------------------------------------
@@ -423,6 +442,22 @@ augment class Supply {
     multi method snip(Supply:D: *@tests) {
         self.snip(@tests)
     }
+}
+
+#-------------------------------------------------------------------------------
+
+# Revision-gated can not be made to work: adding it to the proto in the
+# core epilogue makes building the setting infiniloop
+multi sub infix:<~>(Blob:D $a, Blob:D $b) is default {
+    my $res := nqp::create($a);
+    my $adc := nqp::decont($a);
+    my $bdc := nqp::decont($b);
+    my int $alen = nqp::elems($adc);
+    my int $blen = nqp::elems($bdc);
+
+    nqp::setelems($res, $alen + $blen);
+    nqp::splice($res, $adc, 0, $alen);
+    nqp::splice($res, $bdc, $alen, $blen);
 }
 
 # vim: expandtab shiftwidth=4

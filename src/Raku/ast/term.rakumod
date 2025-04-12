@@ -15,9 +15,12 @@ class RakuAST::Term::Name
         $obj
     }
 
-    method attach(RakuAST::Resolver $resolver) {
-        my $package := $resolver.find-attach-target('package');
-        nqp::bindattr(self, RakuAST::Term::Name, '$!package', $package);
+    method has-compile-time-value() {
+        self.is-resolved && self.resolution.has-compile-time-value
+    }
+
+    method maybe-compile-time-value() {
+        self.resolution.compile-time-value
     }
 
     method PERFORM-PARSE(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -35,30 +38,51 @@ class RakuAST::Term::Name
                 }
             }
         }
+        elsif $!name.is-package-search {
+            my $parts := $!name.IMPL-UNWRAP-LIST($!name.parts);
+            nqp::shift($parts); # Remove leading ::
+            my $name := RakuAST::Name.new(|$parts);
+            $resolved := $resolver.resolve-name($name);
+            if $resolved {
+                self.set-resolution($resolved);
+            }
+        }
         Nil
     }
 
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        my $name := $!name;
+        if $name.is-pseudo-package
+            ?? nqp::istype($name.first-part, RakuAST::Name::Part::Empty) && $name.base-name.is-empty && $name.has-colonpairs
+            !! ! $name.is-package-lookup && ! $name.is-indirect-lookup && ! self.is-resolved
+        {
+            self.add-sorry:
+                $resolver.build-exception: 'X::NoSuchSymbol', :symbol($!name.canonicalize);
+        }
+    }
+
     method build-bind-exception(RakuAST::Resolver $resolver) {
-        if self.name.is-pseudo-package {
-            $resolver.build-exception: 'X::Bind'
-        }
-        else {
-            $resolver.build-exception: 'X::Bind::Rebind',
-                :target(self.name.canonicalize)
-        }
+        my $name   := self.name;
+        my $target := $name.canonicalize;
+        my $class  := 'X::Bind';
+        $name.is-pseudo-package
+          ?? ($target := "pseudo-package $target")
+          !! ($class := 'X::Bind::Rebind');
+        $resolver.build-exception: $class, :$target;
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         if $!name.is-pseudo-package {
-            $!name.IMPL-QAST-PSEUDO-PACKAGE-LOOKUP($context);
+            if self-is-resolved {
+                self.resolution.IMPL-LOOKUP-QAST($context);
+            }
+            else {
+                $!name.IMPL-QAST-PSEUDO-PACKAGE-LOOKUP($context);
+            }
         }
         elsif $!name.is-package-lookup {
-            return self.is-resolved
-                ?? $!name.IMPL-QAST-PACKAGE-LOOKUP(
-                    $context,
-                    $!package,
-                    :lexical(self.resolution)
-                )
+            return self.is-resolved && !$!name.is-global-lookup
+                ?? QAST::Op.new(:op<who>, self.resolution.IMPL-LOOKUP-QAST($context))
                 !! $!name.IMPL-QAST-PACKAGE-LOOKUP(
                     $context,
                     $!package
@@ -70,6 +94,14 @@ class RakuAST::Term::Name
         else {
             self.resolution.IMPL-LOOKUP-QAST($context)
         }
+    }
+
+    method IMPL-CAN-INTERPRET() {
+        self.has-compile-time-value
+    }
+
+    method IMPL-INTERPRET(RakuAST::IMPL::InterpContext $ctx) {
+        self.maybe-compile-time-value
     }
 
     method visit-children(Code $visitor) {
@@ -100,10 +132,13 @@ class RakuAST::Term::Self
   is RakuAST::Term
   is RakuAST::Lookup
   is RakuAST::ParseTime
-  is RakuAST::CheckTime
 {
-    method new() {
-        nqp::create(self)
+    has RakuAST::Var::Attribute::Public $!variable;
+
+    method new(RakuAST::Var::Attribute::Public :$variable) {
+        my $obj := nqp::create(self);
+        nqp::bindattr($obj, RakuAST::Term::Self, '$!variable', $variable // RakuAST::Var::Attribute::Public);
+        $obj
     }
 
     method PERFORM-PARSE(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -115,7 +150,17 @@ class RakuAST::Term::Self
 
     method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
         unless self.is-resolved {
-            self.add-sorry($resolver.build-exception('X::Syntax::Self::WithoutObject'))
+            my $resolved := $resolver.resolve-lexical('self');
+            if $resolved {
+                self.set-resolution($resolved);
+            }
+            else {
+                self.add-sorry(
+                    $!variable
+                        ?? $resolver.build-exception('X::Syntax::NoSelf', :variable($!variable.name))
+                        !! $resolver.build-exception('X::Syntax::Self::WithoutObject')
+                )
+            }
         }
     }
 
@@ -149,11 +194,18 @@ class RakuAST::Term::TopicCall
         ])
     }
 
+    method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
+        # Avoid worries about sink context
+    }
+
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
-        $!call.IMPL-POSTFIX-QAST(
+        my $postfix-ast := $!call.IMPL-POSTFIX-QAST(
           $context,
           self.get-implicit-lookups.AT-POS(0).resolution.IMPL-LOOKUP-QAST($context)
-        )
+        );
+        nqp::istype($!call, RakuAST::Call::Methodish)
+            ?? QAST::Op.new(:op<hllize>, $postfix-ast)
+            !! $postfix-ast
     }
 
     method visit-children(Code $visitor) {
@@ -358,7 +410,6 @@ class RakuAST::Term::Capture
 class RakuAST::Term::Reduce
   is RakuAST::Term
   is RakuAST::BeginTime
-  is RakuAST::CheckTime
   is RakuAST::ImplicitLookups
 {
     has RakuAST::Infixish $.infix;
@@ -486,5 +537,21 @@ class RakuAST::Term::RadixNumber
 
     method visit-children(Code $visitor) {
         $visitor($!value);
+    }
+}
+
+class RakuAST::Term::Declaration
+  is RakuAST::Term
+{
+    has RakuAST::Declaration $.value;
+
+    method new(RakuAST::Declaration $value) {
+        my $obj := nqp::create(self);
+        nqp::bindattr($obj, RakuAST::Term::Declaration, '$!value', $value);
+        $obj
+    }
+
+    method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
+        $!value.IMPL-TO-QAST($context)
     }
 }

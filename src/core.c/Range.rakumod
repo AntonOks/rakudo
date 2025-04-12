@@ -689,11 +689,15 @@ my class Range is Cool does Iterable does Positional {
         $!is-int
           ?? self.elems
           !! nqp::istype($!min,Numeric) && nqp::istype($!max,Numeric)
-            ?? do {
-                my $diff  = 0 max $!max - $!min - $!excludes-min;
-                my $floor = $diff.floor;
-                $floor + 1 - ($floor == $diff ?? $!excludes-max !! 0)
-            }
+            ?? $!min > $!max
+              ?? 0
+              !! $!min == -Inf || $!max == Inf
+                ?? Inf
+                !! do {
+                       my $diff  = 0 max $!max - $!min - $!excludes-min;
+                       my $floor = $diff.floor;
+                       $floor + 1 - ($floor == $diff ?? $!excludes-max !! 0)
+                   }
             !! self.flat.elems
     }
 
@@ -766,6 +770,24 @@ my class Range is Cool does Iterable does Positional {
     method in-range($got, $what?) {
         self.ACCEPTS($got)
           || X::OutOfRange.new(:what($what // 'Value'),:got($got.raku),:range(self.gist)).throw
+    }
+
+    proto method min(|) {*}
+    multi method min()      { $!min                            }
+    multi method min(:$k!)  { $k ?? 0 !! $!min                 }
+    multi method min(:$kv!) { $kv ?? (0,$!min) !! $!min        }
+    multi method min(:$p!)  { $p ?? Pair.new(0,$!min) !! $!min }
+
+    proto method max(|) {*}
+    multi method max() { $!max }
+    multi method max(:$k!)  {
+        $k ?? (try self.end) // Inf !! $!max
+    }
+    multi method max(:$kv!) {
+        $kv ?? ((try self.end) // Inf,$!max) !! $!max
+    }
+    multi method max(:$p!) {
+        $p ?? Pair.new((try self.end) // Inf,$!max) !! $!max
     }
 
     multi method minmax(Range:D:) {

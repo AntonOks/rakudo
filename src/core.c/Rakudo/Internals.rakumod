@@ -515,8 +515,8 @@ my class Rakudo::Internals {
         method new(|) { die self.gist }
         method Str( --> Str:D) { self.^name }
         method gist(--> Str:D) { self.^name }
-        method raku(--> Str:D) {
-            "The '{self.^name}' class is a Rakudo-specific implementation detail and has no serviceable parts inside"
+        method raku($self: --> Str:D) {
+            "The '$self.^name()' class is a Rakudo-specific implementation detail and has no serviceable parts inside.".naive-word-wrapper
         }
     }
 
@@ -768,7 +768,7 @@ my class Rakudo::Internals {
     }
 
     method error-rcgye() {  # red clear green yellow eject
-        $*ERR.t && (self.NUMERIC-ENV-KEY("RAKUDO_ERROR_COLOR") // !self.IS-WIN)
+        !$*COMPILING_CORE_SETTING && $*ERR.t && (self.NUMERIC-ENV-KEY("RAKUDO_ERROR_COLOR") // !self.IS-WIN)
           ?? ("\e[31m", "\e[0m", "\e[32m", "\e[33m", "\x[23CF]")
           !! ("", "", "", "", "<HERE>");
     }
@@ -1311,7 +1311,7 @@ my class Rakudo::Internals {
         has str $!abspath;
         has $!handle;
         has $!dir;
-        has $!file,
+        has $!file;
         has str $!dir-sep;
         has $!todo;
         has $!seen;
