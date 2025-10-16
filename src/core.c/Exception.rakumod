@@ -2031,7 +2031,11 @@ my class X::Syntax::Pod::BeginWithDirective does X::Syntax does X::Pod {
 
 my class X::Syntax::Confused does X::Syntax {
     has $.reason = 'Confused';
-    method message() { $.reason }
+    method message() {
+        $.post.starts-with("≫")
+          ?? "$.reason (did you mean '»' or '>>'?)"
+          !! $.reason
+    }
 }
 
 my class X::Syntax::Malformed does X::Syntax {
@@ -2494,7 +2498,7 @@ my class X::Package::Stubbed does X::Comp {
 
     # The unnamed named param is here so this candidate, rather than
     # the one from X::Comp is used. (is it a bug that this is needed?
-    # No idea: https://colabti.org/irclogger/irclogger_log/perl6-dev?date=2017-09-14#l405
+    # No idea: https://irclogs.raku.org/perl6-dev/2017-09-14.html#18:39-0006
     multi method gist(::?CLASS:D: :$) {
         $.message;
     }
@@ -2841,7 +2845,9 @@ my class X::TypeCheck is Exception {
         nqp::eqaddr($!got.WHAT, $!expected.WHAT)
           ?? $raku
           !! nqp::can($!got.HOW, 'name')
-            ?? "$!got.^name() ($raku)"
+            ?? nqp::istype($!expected,Associative)
+              ?? "$!got.^name()"
+              !! "$!got.^name() ($raku)"
             !! $raku
     }
     method expectedn() {
@@ -2876,6 +2882,11 @@ my class X::TypeCheck is Exception {
             # but we don't know what $!got is and it may not have an `of` method
             elsif $!got.^can('of') && $!got.of =:= Mu {
                 $msg ~= ". You have to pass an explicitly typed array, not one that just might happen to contain elements of the correct type.";
+            }
+        }
+        if $!expected ~~ Associative {
+            if $!got.^can('of') && $!got.of =:= Mu {
+                $msg ~= ". You have to pass an explicitly typed hash, not one that just might happen to contain elements of the correct type."
             }
         }
         $msg.naive-word-wrapper

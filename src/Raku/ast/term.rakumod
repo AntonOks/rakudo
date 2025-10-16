@@ -15,6 +15,10 @@ class RakuAST::Term::Name
         $obj
     }
 
+    method from-identifier(str $name) {
+        self.new(RakuAST::Name.from-identifier($name))
+    }
+
     method has-compile-time-value() {
         self.is-resolved && self.resolution.has-compile-time-value
     }
@@ -109,22 +113,21 @@ class RakuAST::Term::Name
     }
 }
 
+# Core enums
+class RakuAST::Term::Enum
+  is RakuAST::Term::Name
+{
+    method IMPL-IS-CONSTANT() { True }
+}
+
 # True
 class RakuAST::Term::True {
-    method new() {
-        RakuAST::Term::Name.new(RakuAST::Name.from-identifier("True"))
-    }
-
-    method IMPL-IS-CONSTANT() { True }
+    method new() { RakuAST::Term::Enum.from-identifier("True") }
 }
 
 # False
 class RakuAST::Term::False {
-    method new() {
-        RakuAST::Term::Name.new(RakuAST::Name.from-identifier("False"))
-    }
-
-    method IMPL-IS-CONSTANT() { True }
+    method new() { RakuAST::Term::Enum.from-identifier("False") }
 }
 
 # The self term for getting the current invocant
@@ -189,9 +192,9 @@ class RakuAST::Term::TopicCall
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Var::Lexical.new('$_'),
-        ])
+        ]
     }
 
     method PERFORM-CHECK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -201,7 +204,7 @@ class RakuAST::Term::TopicCall
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
         my $postfix-ast := $!call.IMPL-POSTFIX-QAST(
           $context,
-          self.get-implicit-lookups.AT-POS(0).resolution.IMPL-LOOKUP-QAST($context)
+          self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.IMPL-LOOKUP-QAST($context)
         );
         nqp::istype($!call, RakuAST::Call::Methodish)
             ?? QAST::Op.new(:op<hllize>, $postfix-ast)
@@ -443,10 +446,10 @@ class RakuAST::Term::Reduce
     method properties() { $!infix.properties }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Var::Lexical.new('&infix:<,>'),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier($!infix.reducer-name)),
-        ])
+        ]
     }
 
     method PERFORM-BEGIN(Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -472,7 +475,7 @@ class RakuAST::Term::Reduce
     }
 
     method IMPL-HOP-INFIX() {
-        my &reducer := self.get-implicit-lookups.AT-POS(1).resolution.compile-time-value;
+        my &reducer := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[1].resolution.compile-time-value;
         $!triangle ?? &reducer($!infix.IMPL-HOP-INFIX, True) !! &reducer($!infix.IMPL-HOP-INFIX)
     }
 
@@ -496,7 +499,7 @@ class RakuAST::Term::Reduce
             # Form a List of the argumnets and pass it to the reducer
             # TODO thunk case
             my $name :=
-              self.get-implicit-lookups.AT-POS(0).resolution.lexical-name;
+              self.IMPL-UNWRAP-LIST(self.get-implicit-lookups)[0].resolution.lexical-name;
             my $form-list := QAST::Op.new(:op('call'), :$name);
             $!args.IMPL-ADD-QAST-ARGS($context, $form-list);
             QAST::Op.new( :op<call>, $form-meta, $form-list )

@@ -276,9 +276,11 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
         # Seen a -use vxxx- statement
         my $version := $<version>
           ?? ~$<version>
-          !! nqp::getenvhash()<RAKU_LANGUAGE_VERSION> || "";
+          !! $is-EVAL
+            ?? ""
+            !! nqp::getenvhash()<RAKU_LANGUAGE_VERSION> || "";
         if $version {
-            my $major := nqp::radix(10, $<version><vnum>[0], 0, 0)[0];
+            my $major := nqp::radix(10, nqp::substr($version,1), 0, 0)[0];
             unless $major == 6 {
                 $/.typed-panic: 'X::Language::Unsupported', :$version;
             }
@@ -371,6 +373,16 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
                 @final-version := @vparts;
             }
 
+            # In an EVAL we're not allowed to upgrade from e.g. 6.d to 6.e,
+            # at least for now: maybe later we can allow this for all language
+            # levels that are supported by the runtime
+            if $is-EVAL && nqp::atpos(@final-version,0) > $language-revision {
+                nqp::die("Cannot up language revision $language-revision to "
+                  ~ nqp::atpos(@final-version,0)
+                  ~ " in an EVAL"
+                );
+            }
+
             $HLL-COMPILER.set_language_version(@final-version);
             $language-revision := @final-version[0];
             $HLL-COMPILER.set_language_revision: $language-revision;
@@ -407,11 +419,17 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
         # Create a compilation unit.
         my $comp-unit-name := nqp::sha1($*ORIGIN-SOURCE.original-file ~ $/.target);
 
+        # Initialize source and checksum for the compunit
+        my $source   := $*OMIT-SOURCE ?? Nil !! $/.orig;
+        my $checksum := nqp::sha1($/.orig);
+
         # It's an EVAL. We'll take our GLOBAL, $?PACKAGE, etc. from that.
         if $is-EVAL {
             $*CU := Nodify('CompUnit').new(
               :comp-unit-name($comp-unit-name ~ next-id),  # uniqify
               :$setting-name,
+              :$source,
+              :$checksum,
               :eval,
               :outer-cu($*OUTER-CU),
               :$language-revision,
@@ -425,6 +443,8 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
             $*CU := Nodify('CompUnit').new(
               :$comp-unit-name,
               :$setting-name,
+              :$source,
+              :$checksum,
               :setting($*R.setting),
               :global-package-how($package-how),
               :precompilation-mode(%OPTIONS<precomp>),
@@ -2021,6 +2041,14 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
         self.attach: $/, Nodify('Nqp', 'Const').new(~$<const>);
     }
 
+    method term:sym<enum>($/) {
+        # The only key in the hash of the match object contains the
+        # core's enum name, prefixed by "enum-"
+        self.attach($/, Nodify('Term','Enum').from-identifier(
+          nqp::substr(nqp::iterkey_s(nqp::shift(nqp::iterator($/.hash))),5)
+        ));
+    }
+
     method term:sym<name>($/) {
         my $name := $<longname>.core2ast;
         if $*META-OP {
@@ -2126,9 +2154,7 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
         $<capvar>
           ?? self.attach($/, Nodify('Var', 'NamedCapture').new(
                Nodify('QuotedString').new(
-                 :segments(Nodify('QuotedString').IMPL-WRAP-LIST([
-                   Nodify('StrLiteral').new(~$<desigilname>)
-                 ]))
+                 :segments([Nodify('StrLiteral').new(~$<desigilname>)])
                )
              ))
           !! self.simple-variable($/);
@@ -2152,9 +2178,7 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
             my $name := Nodify('Name').from-identifier('infix');
             $name.add-colonpair(
                 Nodify('QuotedString').new(
-                    :segments($name.IMPL-WRAP-LIST([
-                        Nodify('StrLiteral').new(~$<infixish>)
-                    ]))
+                    :segments([Nodify('StrLiteral').new(~$<infixish>)])
                 )
             );
             self.compile-variable-access($/, '&', '', $name);
@@ -2245,25 +2269,21 @@ class Raku::Actions is HLL::Actions does Raku::CommonActions {
         }
         elsif $twigil eq '?' {
             my $origin-source := $*ORIGIN-SOURCE;
-            $ast := $name eq '$?FILE'
-              ?? Nodify('Var','Compiler','File').new(
-                   $*LITERALS.intern-Str($origin-source.original-file)
+            $ast := $name eq '$?LINE'
+              ?? Nodify('Var','Compiler','Line').new(
+                   $*LITERALS.intern-Int($origin-source.original-line($/.from))
                  )
-              !! $name eq '$?LINE'
-                ?? Nodify('Var','Compiler','Line').new(
-                     $*LITERALS.intern-Int($origin-source.original-line($/.from))
-                   )
-                !! $name eq '$?LANG'
-                  ?? Nodify('Var', 'Compiler', 'Lang').new($/)
-                  !! $name eq '&?BLOCK'
-                    ?? Nodify('Var','Compiler','Block').new
-                    !! $name eq '&?ROUTINE'
-                      ?? Nodify('Var','Compiler','Routine').new
-                      !! $name eq '%?RESOURCES'
-                        ?? Nodify('Var', 'Compiler', 'Resources').new
-                        !! $name eq '$?DISTRIBUTION'
-                          ?? Nodify('Var', 'Compiler', 'Distribution').new
-                          !! Nodify('Var','Compiler','Lookup').new($name);
+              !! $name eq '$?LANG'
+                ?? Nodify('Var', 'Compiler', 'Lang').new($/)
+                !! $name eq '&?BLOCK'
+                  ?? Nodify('Var','Compiler','Block').new
+                  !! $name eq '&?ROUTINE'
+                    ?? Nodify('Var','Compiler','Routine').new
+                    !! $name eq '%?RESOURCES'
+                      ?? Nodify('Var', 'Compiler', 'Resources').new
+                      !! $name eq '$?DISTRIBUTION'
+                        ?? Nodify('Var', 'Compiler', 'Distribution').new
+                        !! Nodify('Var','Compiler','Lookup').new($name);
         }
         elsif $twigil eq '^' {
             $ast := Nodify('VarDeclaration','Placeholder','Positional').new(

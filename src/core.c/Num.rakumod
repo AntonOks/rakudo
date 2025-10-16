@@ -555,7 +555,7 @@ multi sub asech(  num $x --> num) { acosh(1e0 / $x) }
 multi sub cosech( num $x --> num) { 1e0 / sinh($x)  }
 multi sub acosech(num $x --> num) { asinh(1e0 / $x) }
 multi sub cotanh( num $x --> num) { 1e0 / tanh($x)  }
-multi sub acotanh(num $x --> num) { atanh(1e0 / $x) }
+multi sub acotanh(num $x        ) { atanh(1e0 / $x) }
 
 multi sub asinh(num $x --> num) {
     # ln(x + √(x²+1))
@@ -575,12 +575,15 @@ multi sub acosh(num $x --> num) {
            nqp::add_n($x,nqp::pow_n(nqp::sub_n(nqp::mul_n($x,$x),1e0),.5e0))
          )
 }
-multi sub atanh(num $x --> num) {
+multi sub atanh(num $x) {
     $x == 1e0 ?? Inf !! log((1e0 + $x) / (1e0 - $x)) / 2e0;
 }
 
 multi sub floor(  num $a --> num) { nqp::floor_n($a) }
 multi sub ceiling(num $a --> num) { nqp::ceil_n($a)  }
-multi sub sqrt(   num $a --> num) { nqp::sqrt_n($a)  }
+
+multi sub sqrt(num $a) {
+    nqp::islt_n($a,0e0) ?? $a.sqrt !! nqp::sqrt_n($a)
+}
 
 # vim: expandtab shiftwidth=4

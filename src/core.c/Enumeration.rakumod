@@ -14,7 +14,10 @@ my role Enumeration {
     method pair(::?CLASS:D:) { $!key => $!value }
 
     multi method gist(::?CLASS:D:) { $!key                     }
-    multi method raku(::?CLASS:D:) { self.^name ~ '::' ~ $!key }
+    multi method raku(::?CLASS:D $self:) {
+        my $key := .contains(/ \W /) ?? "<$_>" !! $_ with $!key;
+        "$self.^name()::$key"
+    }
 
     multi method pick(::?CLASS:U:)       { self.^enum_value_list.pick     }
     multi method pick(::?CLASS:U: \n)    { self.^enum_value_list.pick(n)  }
@@ -81,6 +84,8 @@ my role Enumeration {
              )
           !! self
     }
+
+    method clone(::?CLASS:) { self }
 }
 
 # Methods that we also have if the base type of an enumeration is

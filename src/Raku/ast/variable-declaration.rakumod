@@ -332,9 +332,9 @@ class RakuAST::TraitTarget::Variable
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Variable')),
-        ])
+        ]
     }
 
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -403,7 +403,7 @@ class RakuAST::VarDeclaration::Constant
     method needs-sink-call() { False }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             self.sigil eq '@'
                 ?? RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Positional'))
                 !! self.sigil eq '%'
@@ -414,7 +414,7 @@ class RakuAST::VarDeclaration::Constant
                             ?? $!type
                             !! nqp::null,
 
-        ])
+        ]
     }
 
     method visit-children(Code $visitor) {
@@ -1217,7 +1217,7 @@ class RakuAST::VarDeclaration::Simple
             )
         );
 
-        self.IMPL-WRAP-LIST(@lookups)
+        @lookups
     }
 
     method IMPL-SIGIL-TYPE() {
@@ -1675,7 +1675,7 @@ class RakuAST::VarDeclaration::Signature
         if $scope eq 'has' || $scope eq 'HAS' {
             @lookups.push(RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Nil')));
         }
-        self.IMPL-WRAP-LIST(@lookups)
+        @lookups
     }
 
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -2429,10 +2429,9 @@ class RakuAST::VarDeclaration::Implicit::State
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        my @lookups := $!init-to-zero ?? [
+        $!init-to-zero ?? [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Int'))
         ] !! [];
-        self.IMPL-WRAP-LIST(@lookups)
     }
 
     method PRODUCE-META-OBJECT() {
@@ -2557,17 +2556,19 @@ class RakuAST::VarDeclaration::Implicit::Doc::Rakudoc
     method name() { '$=rakudoc' }
 
     method fetch-blocks(RakuAST::StatementList $statement-list) {
+        my $RAKUDOC := $*RAKUDOC;  # lexicals are faster
+
         for nqp::getattr(
           $statement-list,RakuAST::StatementList,'$!statements'
         ) {
             if nqp::istype($_,RakuAST::Doc::Block) {
-                nqp::push($*RAKUDOC,$_);
+                nqp::push($RAKUDOC,$_);
             }
             elsif nqp::istype($_,RakuAST::Statement::Expression) {
                 my $expression := $_.expression;
                 if nqp::istype($expression,RakuAST::Doc::DeclaratorTarget)
                   && $expression.WHY {
-                    nqp::push($*RAKUDOC,$expression);
+                    nqp::push($RAKUDOC,$expression);
                 }
             }
             elsif nqp::istype($_,RakuAST::Blockoid) {

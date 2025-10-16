@@ -13,6 +13,8 @@ class RakuAST::CompUnit
     has RakuAST::Block $.mainline;
     has Str $.comp-unit-name;
     has Str $.setting-name;
+    has Str $.source;
+    has Str $.checksum;
     has Mu $.language-revision; # Same type as in CORE-SETTING-REV
     has Mu $!sc;
     has int $!is-sunk;
@@ -39,6 +41,8 @@ class RakuAST::CompUnit
 
     method new(          Str :$comp-unit-name!,
                          Str :$setting-name,
+                         Str :$source,
+                         Str :$checksum,
                          Mu  :$setting,
                         Bool :$eval,
                           Mu :$global-package-how,
@@ -61,6 +65,10 @@ class RakuAST::CompUnit
           $comp-unit-name);
         nqp::bindattr($obj, RakuAST::CompUnit, '$!setting-name',
           $setting-name // Str);
+        nqp::bindattr($obj, RakuAST::CompUnit, '$!source',
+          $source =:= NQPMu ?? Nil !! $source);
+        nqp::bindattr($obj, RakuAST::CompUnit, '$!checksum',
+          $checksum =:= NQPMu ?? Nil !! $checksum);
         nqp::bindattr_i($obj, RakuAST::CompUnit, '$!is-eval',
           $eval ?? $outer-cu ?? 2 !! 1 !! 0);
         nqp::bindattr($obj, RakuAST::CompUnit, '$!global-package-how',
@@ -369,7 +377,7 @@ class RakuAST::CompUnit
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier-parts(
                 'CompUnit', 'RepositoryRegistry',
             )),
@@ -378,7 +386,7 @@ class RakuAST::CompUnit
                 'X', 'Comp', 'BeginTime'
             )),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&COMP_EXCEPTION')),
-        ])
+        ]
     }
 
     method IMPL-FATALIZE {
@@ -396,10 +404,19 @@ class RakuAST::CompUnit
         }
         else {
             my $global := RakuAST::Package.new(
-              how  => $!global-package-how,
-              name => RakuAST::Name.from-identifier('GLOBAL')
+                how  => $!global-package-how,
+                name => RakuAST::Name.from-identifier('GLOBAL')
             );
             $global.meta-object; # Ensure GLOBAL is composed right away
+
+            # For non-eval dynamic compilation at CHECK time, we need to produce these in a
+            # specific order: $_, $/, $?PACKAGE
+            # After that, we can add the rest.
+            add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$_')));
+            add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$/')));
+            add(RakuAST::VarDeclaration::Implicit::Constant.new(
+                name => '$?PACKAGE', value => $global.compile-time-value
+            ));
 
             add($global);
             add(RakuAST::VarDeclaration::Implicit::Constant.new(
@@ -408,13 +425,40 @@ class RakuAST::CompUnit
             add(RakuAST::VarDeclaration::Implicit::Constant.new(
               name => 'EXPORT', value => $!export-package
             )) unless nqp::eqaddr($!export-package,Mu);
-            add(RakuAST::VarDeclaration::Implicit::Constant.new(
-              name => '$?PACKAGE', value => $global.compile-time-value
-            ));
-            add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$/')));
+
             add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$!')));
-            add(RakuAST::VarDeclaration::Implicit::Special.new(:name('$_')));
+
+            add($!finish) if $!finish-content;
+            add($!data) if $!data-content;
+            add($!pod) if $!pod-content;
         }
+
+        add(RakuAST::VarDeclaration::Implicit::Constant.new(
+          name  => '$?SOURCE',
+          value => $!source
+        ));
+
+        add(RakuAST::VarDeclaration::Implicit::Constant.new(
+          name  => '$?CHECKSUM',
+          value => $!checksum
+        ));
+
+        my sub relative-source-filename() {
+            if $*LITERALS {
+                my str $file := $*ORIGIN-SOURCE.original-file;
+                my str $cwd  := nqp::cwd();
+                $*LITERALS.intern-Str(nqp::eqat($file,$cwd,0)
+                  ?? nqp::substr($file,nqp::chars($cwd) + 1)
+                  !! $file
+                )
+            }
+            else {
+                '<unknown>'
+            }
+        }
+        add(RakuAST::VarDeclaration::Implicit::Constant.new(
+          name  => '$?FILE', value => relative-source-filename()
+        ));
 
         add(RakuAST::VarDeclaration::Implicit::Cursor.new());
 
@@ -433,7 +477,7 @@ class RakuAST::CompUnit
             name => '!EVAL_MARKER', value => 1
         )) if $!is-eval;
 
-        self.IMPL-WRAP-LIST(@decls)
+        @decls
     }
 
     method IMPL-TO-QAST-COMP-UNIT(*%options) {
@@ -618,7 +662,9 @@ class RakuAST::CompUnit
 
     method generated-global() {
         nqp::die('No generated global in an EVAL-mode compilation unit') if $!is-eval;
-        self.IMPL-UNWRAP-LIST(self.get-implicit-declarations)[0].compile-time-value
+        # GLOBALish is installed as the fourth entry in PRODUCE-IMPLICIT-DECLARATIONS
+        # due to the structural expectations of dynamic compilation fixups
+        self.IMPL-UNWRAP-LIST(self.get-implicit-declarations)[3].compile-time-value
     }
 
     method visit-children(Code $visitor) {

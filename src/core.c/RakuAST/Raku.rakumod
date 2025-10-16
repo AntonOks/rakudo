@@ -96,7 +96,7 @@ augment class RakuAST::Node {
             Pair.new($name, Rakufy-as.new(:$raku))
         }
 
-        my $special := BEGIN nqp::hash(
+        my $special := nqp::hash(
           'abbreviated', -> {
               :abbreviated if self.abbreviated && !self.directive
           },
@@ -1134,6 +1134,10 @@ augment class RakuAST::Node {
         self!positional(self.source)
     }
 
+    multi method raku(RakuAST::Term::Enum:D: --> Str:D) {
+        self.^name ~ ".from-identifier('" ~ self.name.canonicalize ~ "')"
+    }
+
     multi method raku(RakuAST::Term::Name:D: --> Str:D) {
         self!positional(self.name)
     }
@@ -1239,6 +1243,10 @@ augment class RakuAST::Node {
 
     multi method raku(RakuAST::Var::Compiler::Lookup:D: --> Str:D) {
         self!positional(self.name)
+    }
+
+    multi method raku(RakuAST::Var::Compiler::Routine:D: --> Str:D) {
+        self!none
     }
 
     multi method raku(RakuAST::Var::Dynamic:D: --> Str:D) {

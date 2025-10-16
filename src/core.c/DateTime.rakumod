@@ -525,7 +525,7 @@ my class DateTime does Dateish {
     }
 
     method modified-julian-date(DateTime:D: --> Real:D) {
-        self.daycount + self.day-fraction
+        .daycount + .day-fraction with self.utc
     }
 
     method julian-date(DateTime:D: --> Real:D) {
@@ -717,6 +717,20 @@ my class DateTime does Dateish {
           ~ ".new($!year,$!month,$!day,$!hour,$!minute,$!second"
           ~ (',' ~ :$!timezone.raku if $!timezone)
           ~ ')'
+    }
+
+    multi method WHICH(DateTime:D:) {
+        nqp::box_s(
+          nqp::concat(
+            nqp::if(
+              nqp::eqaddr(self.WHAT,DateTime),
+              'DateTime|',
+              nqp::concat(nqp::unbox_s(self.^name), '|')
+            ),
+            nqp::unbox_s(self.Str)
+          ),
+          ValueObjAt
+        )
     }
 
     multi method ACCEPTS(DateTime:D: DateTime:D \topic) { self == topic }

@@ -251,7 +251,6 @@ class RakuAST::Code
     }
 
     method IMPL-FIXUP-DYNAMICALLY-COMPILED-BLOCK(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context, Mu $block) {
-
         my $visit-block;
         my $visit-children;
 
@@ -372,20 +371,40 @@ class RakuAST::Code
     method IMPL-COMPILE-DYNAMICALLY(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context, Mu $block) {
         my $wrapper := QAST::Block.new(QAST::Stmts.new(), nqp::clone($block));
         $wrapper.annotate('DYN_COMP_WRAPPER', 1);
-        $wrapper[0].push(QAST::Var.new(
-            :name('$_'), :scope('lexical'),
-            :decl('contvar'), :value(Mu)
-        ));
-        $wrapper[0].push(QAST::Var.new(
-            :name('$/'), :scope('lexical'),
-            :decl('contvar'), :value(Nil)
-        ));
+
         my $package := $!resolver.current-package;
         $context.ensure-sc($package);
-        $wrapper[0].push(QAST::Var.new(
-            :name('$?PACKAGE'), :scope('lexical'),
-            :decl('static'), :value($package)
-        ));
+
+        my $comp-unit := $resolver.find-attach-target("compunit");
+        # When $comp-unit.is-eval, all required declarations will be included in QAST when
+        # ForeignCode::EVAL calls RakuAST::CompUnit::IMPL-TO-QAST-COMP-UNIT.
+        # Other forms of dynamic compilation (CHECK, most notably) need to manually add the
+        # $comp-unit's implicit declarations to the QAST pre-amble. This is in order for CHECK-time
+        # lexical lookups into UNIT::<*> to resolve even as the $comp-unit is still in the
+        # process of compiling.
+        if ! $comp-unit.is-eval && nqp::elems(my @decls := $comp-unit.PRODUCE-IMPLICIT-DECLARATIONS // []) {
+            for @decls {
+                if nqp::istype($_, RakuAST::VarDeclaration::Implicit) {
+                    # CompUnit's generated $?PACKAGE points to the generated GLOBAL, so we update it here.
+                    # (Otherwise all sorts of subtle side effects occur with eg `use experimental :pack`)
+                    $_.set-value($package) if $_.lexical-name eq '$?PACKAGE';
+                    $wrapper[0].push($_.IMPL-QAST-DECL($context))
+                }
+            }
+        } else {
+            $wrapper[0].push(QAST::Var.new(
+                :name('$_'), :scope('lexical'),
+                :decl('contvar'), :value(Mu)
+            ));
+            $wrapper[0].push(QAST::Var.new(
+                :name('$/'), :scope('lexical'),
+                :decl('contvar'), :value(Nil)
+            ));
+            $wrapper[0].push(QAST::Var.new(
+                :name('$?PACKAGE'), :scope('lexical'),
+                :decl('static'), :value($package)
+            ));
+        }
 
         for self.IMPL-EXTRA-BEGIN-TIME-DECLS($resolver, $context) {
             if nqp::istype($_, RakuAST::CompileTimeValue) {
@@ -400,14 +419,14 @@ class RakuAST::Code
 
         self.IMPL-FIXUP-DYNAMICALLY-COMPILED-BLOCK($resolver, $context, $wrapper);
 
-        my $compunit := QAST::CompUnit.new(
+        my $qast-compunit := QAST::CompUnit.new(
             :hll('Raku'),
             :sc($context.sc()),
             :compilation_mode(0),
             $wrapper
         );
         my $comp := $*HLL-COMPILER // nqp::getcomp("Raku");
-        my $precomp := $comp.compile($compunit, :from<qast>, :compunit_ok(1));
+        my $precomp := $comp.compile($qast-compunit, :from<qast>, :compunit_ok(1));
         my $mainline := $comp.backend.compunit_mainline($precomp);
         $mainline();
 
@@ -1371,14 +1390,14 @@ class RakuAST::Block
         if $!fresh-exception {
             nqp::push(@implicit, RakuAST::VarDeclaration::Implicit::Special.new(:name('$!')));
         }
-        self.IMPL-WRAP-LIST(@implicit)
+        @implicit
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Code')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&FATALIZE')),
-        ])
+        ]
     }
 
     method IMPL-FATALIZE() {
@@ -1713,10 +1732,10 @@ class RakuAST::PointyBlock
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Callable')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&FATALIZE')),
-        ])
+        ]
     }
 
     method IMPL-FATALIZE() {
@@ -1876,10 +1895,10 @@ class RakuAST::Routine
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Callable')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&FATALIZE')),
-        ])
+        ]
     }
 
     method IMPL-FATALIZE() {
@@ -2025,11 +2044,11 @@ class RakuAST::Routine
                         :scope<my>,
                         :name(self.name),
                         :signature(RakuAST::Signature.new(
-                            :parameters(self.IMPL-WRAP-LIST([
+                            :parameters([
                                 RakuAST::Parameter.new(
                                     :slurpy(RakuAST::Parameter::Slurpy::Capture),
                                 )
-                            ])),
+                            ]),
                         )),
                         :body(RakuAST::OnlyStar.new),
                         :multiness<proto>,
@@ -2114,7 +2133,7 @@ class RakuAST::Routine
         nqp::push(@declarations, RakuAST::VarDeclaration::Implicit::Special.new(:name('$_'))) if $underscore;
         nqp::push(@declarations, RakuAST::VarDeclaration::Implicit::Routine.new()) if $!need-routine-variable;
         nqp::push(@declarations, RakuAST::VarDeclaration::Implicit::Cursor.new()); #TODO maybe we can rule out cases where we don't need it
-        self.IMPL-WRAP-LIST(@declarations)
+        @declarations
     }
 
     method IMPL-HAS-PARAMETER(Str $name) {
@@ -2852,7 +2871,7 @@ class RakuAST::RegexDeclaration
         ];
         nqp::push(@declarations, RakuAST::VarDeclaration::Implicit::Routine.new())
             if nqp::getattr(self, RakuAST::Routine, '$!need-routine-variable');
-        self.IMPL-WRAP-LIST(@declarations)
+        @declarations
     }
 
     method IMPL-COMPILE-BODY(RakuAST::IMPL::QASTContext $context) {
@@ -2975,7 +2994,7 @@ class RakuAST::QuotedMatchConstruct
             }
         }
         nqp::bindattr(self, RakuAST::QuotedMatchConstruct, '$!adverbs',
-            self.IMPL-WRAP-LIST(@checked-adverbs));
+            @checked-adverbs);
         Nil
     }
 
@@ -3082,13 +3101,13 @@ class RakuAST::QuotedRegex
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Var::Lexical.new('$_'),
             RakuAST::Var::Lexical.new('$/'),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier-parts(
                 'Rakudo', 'Internals', 'RegexBoolification6cMarker'
             ))
-        ])
+        ]
     }
 
     method IMPL-IS-IMMEDIATE-MATCH-ADVERB(str $norm-adverb) {
@@ -3229,11 +3248,11 @@ class RakuAST::Substitution
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Var::Lexical.new('$_'),
             RakuAST::Var::Lexical.new('$/'),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Positional')),
-        ])
+        ]
     }
 
     method IMPL-IS-SUBST-MATCH-ADVERB(str $norm-adverb) {
@@ -3492,10 +3511,10 @@ class RakuAST::Transliteration
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Pair')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('StrDistance')),
-        ])
+        ]
     }
 
     method IMPL-EXPR-QAST(RakuAST::IMPL::QASTContext $context) {
@@ -3618,9 +3637,9 @@ class RakuAST::CurryThunk
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('WhateverCode'))
-        ])
+        ]
     }
 
     method IMPL-NUM-PARAMS() {
@@ -3657,10 +3676,10 @@ class RakuAST::BlockThunk
     }
 
     method PRODUCE-IMPLICIT-DECLARATIONS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::VarDeclaration::Implicit::BlockTopic.new:
                 parameter => self.signature ?? False !! True
-        ]);
+        ];
     }
 
     method IMPL-THUNK-OBJECT-TYPE() {

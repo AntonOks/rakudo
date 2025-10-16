@@ -16,7 +16,6 @@ my %provides =
     "BUILDPLAN"                     => "lib/BUILDPLAN.rakumod",
     "RakuDoc::To::Text"             => "lib/RakuDoc/To/Text.rakumod",
     "RakuDoc::To::RakuDoc"          => "lib/RakuDoc/To/RakuDoc.rakumod",
-    "RakuAST::L10N"                 => "lib/RakuAST/L10N.rakumod",
     "RakuAST::Deparse::Highlight"
       => "lib/RakuAST/Deparse/Highlight.rakumod",
 ;
@@ -40,7 +39,7 @@ my $REPO := PROCESS::<$REPO> := Staging.new(
     :next-repo(
         # Make CompUnit::Repository::Staging available to precomp processes
         CompUnit::Repository::Installation.new(
-            :$prefix
+            :$prefix,
             :next-repo(CompUnit::RepositoryRegistry.repository-for-name('core')),
         )
     ),

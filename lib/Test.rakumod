@@ -1,7 +1,7 @@
 use MONKEY-GUTS;          # Allow NQP ops.
 
 unit module Test;
-# Copyright (C) 2007 - 2022 The Perl Foundation.
+# Copyright (C) 2007 - 2025 Yet Another Society
 
 # settable from outside
 my int $raku_test_times =
@@ -540,6 +540,23 @@ multi sub dies-ok(Callable $code, $reason = '') is export {
         $death = 0;
     }
     my $ok = proclaim( $death, $reason );
+    $time_before = nqp::time;
+    $ok or ($die_on_fail and die-on-fail) or $ok;
+}
+
+multi sub exit-ok(
+        &code,
+  Int:D $exit = 0,
+  Str:D $desc = "Checking for exit($exit)"
+) is export {
+    my $got;
+    my $seen;
+    my &*EXIT = { $seen = True; $got = $_ }
+    $time_after = nqp::time;
+    code();
+    my $ok = $seen
+      ?? proclaim($got == $exit, "Was the exit code $exit?")
+      !! proclaim(False, "Code did not exit, no exit value to check");
     $time_before = nqp::time;
     $ok or ($die_on_fail and die-on-fail) or $ok;
 }

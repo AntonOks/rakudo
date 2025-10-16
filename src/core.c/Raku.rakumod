@@ -4,13 +4,13 @@ class Raku does Systemic {
     submethod TWEAK(--> Nil) {
         # https://github.com/rakudo/rakudo/issues/3436
         nqp::bind($!name,'Raku');
-        nqp::bind($!auth,'The Perl Foundation');
+        nqp::bind($!auth,'Yet Another Society');
         nqp::bind($!version,nqp::getcomp('Raku').language_version.Version);
     }
 
     method VMnames { <moar jvm js> }
 
-    method DISTROnames { <macosx linux freebsd mswin32 openbsd dragonfly netbsd browser> }
+    method DISTROnames { <macos linux freebsd mswin32 openbsd dragonfly netbsd browser> }
     method KERNELnames { <darwin linux freebsd openbsd netbsd dragonfly sunos win32 browser>  }
 
     my $version-cache      := nqp::hash;

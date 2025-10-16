@@ -926,6 +926,23 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
 
     token constraint-where { where}
 
+    token enum-BigEndian         { BigEndian}
+    token enum-Broken            { Broken}
+    token enum-False             { False}
+    token enum-FileChanged       { FileChanged}
+    token enum-FileRenamed       { FileRenamed}
+    token enum-Kept              { Kept}
+    token enum-Less              { Less}
+    token enum-LittleEndian      { LittleEndian}
+    token enum-More              { More}
+    token enum-NativeEndian      { NativeEndian}
+    token enum-Planned           { Planned}
+    token enum-Same              { Same}
+    token enum-SeekFromBeginning { SeekFromBeginning}
+    token enum-SeekFromCurrent   { SeekFromCurrent}
+    token enum-SeekFromEnd       { SeekFromEnd}
+    token enum-True              { True}
+
     token infix-after      { after}
     token infix-and        { and}
     token infix-andthen    { andthen}
@@ -3260,7 +3277,7 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
         }
         [
         || <!{ $*IN_REDUCE }> {
-            $/.panic("Unexpected block in infix position (missing statement control word before the expression?)");
+            $/.panic("Unexpected block in infix position (missing statement control word before the expression? Or did you forget a semi-colon?)");
         }
         || <!>
         ]
@@ -3298,6 +3315,15 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
         'WHAT', 2, 'WHICH', 2, 'WHERE', 2, 'HOW', 2, 'WHENCE', 2, 'WHO', 2, 'VAR', 2, 'any', 2,
         'all', 2, 'none', 2, 'one', 2, 'set', 2, 'bag', 2, 'tclc', 2, 'wordcase', 2, 'put', 2,
     );
+
+    token term:sym<enum> {
+            <enum-BigEndian> | <enum-Broken> | <enum-False>
+          | <enum-FileChanged> | <enum-FileRenamed> | <enum-Kept>
+          | <enum-Less> | <enum-LittleEndian> | <enum-More>
+          | <enum-NativeEndian> | <enum-Planned> | <enum-Same>
+          | <enum-SeekFromBeginning> | <enum-SeekFromCurrent>
+          | <enum-SeekFromEnd> | <enum-True>
+    }
 
     token term:sym<name> {
         :my $*IS-TYPE;
@@ -3662,11 +3688,6 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
     token special-variable:sym<$?> {
         <.sym> {} <!before \w | '('>
         <.obsvar: '$?'>
-    }
-
-    token special-variable:sym<$]> {
-        <.sym> {} <!before \w | '('>
-        <.obsvar: '$]'>
     }
 
     regex special-variable:sym<${ }> {
@@ -6301,6 +6322,7 @@ grammar Raku::QGrammar is HLL::Grammar does Raku::Common {
     token do-nibbling {
         :my int $from := self.pos;
         :my int $to   := $from;
+        :my $orig     := self.orig;
         :my @NIBBLES;
         [
           <!stopper>
@@ -6310,24 +6332,26 @@ grammar Raku::QGrammar is HLL::Grammar does Raku::Common {
                <stopper>
                {
                    my $c := $/;
-                   $to   := $<starter>[-1].from;
-                   nqp::push(@NIBBLES,nqp::substr($c.orig,$from,$to - $from))
+                   my $starter := $<starter>.pop;
+                   $to   := $starter.from;
+                   nqp::push(@NIBBLES,nqp::substr($orig,$from,$to - $from))
                      if $from != $to;
 
-                   nqp::push(@NIBBLES,$<starter>[-1].Str);
-                   nqp::push(@NIBBLES,$<nibbler>[-1]);
-                   nqp::push(@NIBBLES,$<stopper>[-1].Str);
+                   nqp::push(@NIBBLES,$starter.Str);
+                   nqp::push(@NIBBLES,$<nibbler>.pop);
+                   nqp::push(@NIBBLES,$<stopper>.pop.Str);
 
                    $from := $to := $c.pos;
                }
             || <escape>
                {
-                   my $c := $/;
-                   $to   := $<escape>[-1].from;
-                   nqp::push(@NIBBLES,nqp::substr($c.orig,$from,$to - $from))
+                   my $c      := $/;
+                   my $escape := $<escape>.pop;
+                   $to        := $escape.from;
+                   nqp::push(@NIBBLES,nqp::substr($orig,$from,$to - $from))
                      if $from != $to;
 
-                   nqp::push(@NIBBLES,$<escape>[-1]);
+                   nqp::push(@NIBBLES,$escape);
 
                    $from := $to := $c.pos;
                }
@@ -6338,7 +6362,7 @@ grammar Raku::QGrammar is HLL::Grammar does Raku::Common {
             my $c := $/;
             $to   := $c.pos;
             $*LASTQUOTE := [self.pos, $to];
-            nqp::push(@NIBBLES,nqp::substr($c.orig,$from,$to - $from))
+            nqp::push(@NIBBLES,nqp::substr($orig,$from,$to - $from))
               if $from != $to || !@NIBBLES;
             @*NIBBLES := @NIBBLES;
         }

@@ -936,12 +936,19 @@ CODE
             }
 
             else {
-                my $deparsed := self.deparse(.value);
-                $deparsed eq 'True'
-                  ?? ":$key"
-                  !! $deparsed eq 'False'
-                    ?? ":!$key"
-                    !! ":$key$deparsed"
+                my $value    := .value;
+                my $deparsed := self.deparse($value);
+                if nqp::istype($value,RakuAST::Term::Enum) {
+                    my $name := $value.name.canonicalize;
+                    $name eq 'True'
+                      ?? ":$key"
+                      !! $name eq 'False'
+                        ?? ":!$key"
+                        !! ":$key$deparsed"
+                }
+                else {
+                    ":$key$deparsed"
+                }
             }
         }
 
@@ -2023,9 +2030,9 @@ CODE
         }
 
         # no parameters with declarator doc
-        else {
-            @parts.push(self.parenthesize($signature))
-              if $signature.parameters-initialized;
+        elsif $signature.parameters-initialized {
+            my $sigstr := self.parenthesize($signature);
+            @parts.push($sigstr) unless $sigstr eq '()';
         }
 
         if $ast.traits.map({self.deparse($_)}).join(' ') -> $traits {
@@ -2496,6 +2503,11 @@ CODE
 
     multi method deparse(RakuAST::Term::EmptySet:D $ --> Str:D) {
         $.term-empty-set
+    }
+
+    multi method deparse(RakuAST::Term::Enum:D $ast --> Str:D) {
+        my str $name = $ast.name.canonicalize;
+        self.hsyn("enum-$name", self.xsyn('enum', $name))
     }
 
     multi method deparse(RakuAST::Term::HyperWhatever:D $ --> Str:D) {

@@ -289,7 +289,7 @@ class RakuAST::Infix
         nqp::push(@lookups,
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Nil')))
             if $!operator eq '^^' || $!operator eq 'xor';
-        self.IMPL-WRAP-LIST(@lookups)
+        @lookups
     }
 
     method PERFORM-PARSE(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -846,10 +846,23 @@ class RakuAST::Feed
             # Check what we have. XXX Real first step should be looking
             # for @(*) since if we find that it overrides all other things.
             # But that's todo...soon. :-)
-            if nqp::istype($stage, QAST::Op) && $stage.op eq 'call' {
-                # It's a call. Stick a call to the current supplier in
-                # as its last argument.
-                $stage.push(QAST::Op.new( :op('call'), $result ));
+            if nqp::istype($stage, QAST::Op) {
+                if $stage.op eq 'call' {
+                    # It's a call. Stick a call to the current supplier in
+                    # as its last argument.
+                    $stage.push(QAST::Op.new( :op('call'), $result ));
+                }
+                elsif $stage.op eq 'hllize'
+                && nqp::istype($stage[0], QAST::Op)
+                && $stage[0].op eq 'callmethod' {
+                    # It's an indirect method call of the form foo-method($obj:)
+                    # Append the call that produces the result as the argument to the
+                    # indirect method call...
+                    $stage[0].push: QAST::Op.new: :op<call>, $result;
+                    # ... and wrap the entire indirect method call with a block
+		    # for the next stage to call
+                    $stage[0] := QAST::Op.new: :op<call>, QAST::Block.new: $stage[0];
+                }
             }
             elsif nqp::istype($stage, QAST::Var) {
                 # It's a variable. We need code that gets the results, pushes
@@ -935,13 +948,13 @@ class RakuAST::FlipFlop
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Nil')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('True')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('False')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Int')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('Whatever'))
-        ])
+        ]
     }
 
     method PERFORM-BEGIN(RakuAST::Resolver $resolver, RakuAST::IMPL::QASTContext $context) {
@@ -1221,7 +1234,7 @@ class RakuAST::MetaInfix
   is RakuAST::CheckTime
 {
     method IMPL-HOP-INFIX() {
-        self.get-implicit-lookups().AT-POS(0).resolution.compile-time-value()(
+        self.IMPL-UNWRAP-LIST(self.get-implicit-lookups())[0].resolution.compile-time-value()(
             self.infix.IMPL-HOP-INFIX
         )
     }
@@ -1309,9 +1322,9 @@ class RakuAST::MetaInfix::Assign
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier(self.IMPL-OPERATOR-NAME(1))),
-        ])
+        ]
     }
 
     method IMPL-OPERATOR() {
@@ -1407,9 +1420,9 @@ class RakuAST::MetaInfix::Negate
     method reducer-name() { $!infix.reducer-name }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_NEGATE')),
-        ])
+        ]
     }
 
     method IMPL-OPERATOR() {
@@ -1468,9 +1481,9 @@ class RakuAST::MetaInfix::Reverse
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_REVERSE')),
-        ])
+        ]
     }
 
     method IMPL-OPERATOR() {
@@ -1529,8 +1542,7 @@ class RakuAST::MetaInfix::Sequence
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
-        ])
+        []
     }
 
     method IMPL-OPERATOR() {
@@ -1584,10 +1596,10 @@ class RakuAST::MetaInfix::Cross
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_CROSS')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier($!infix.reducer-name)),
-        ])
+        ]
     }
 
     method IMPL-OPERATOR() {
@@ -1610,10 +1622,10 @@ class RakuAST::MetaInfix::Cross
     }
 
     method IMPL-HOP-INFIX() {
-        my $lookups := self.get-implicit-lookups;
-        $lookups.AT-POS(0).resolution.compile-time-value()(
+        my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
+        $lookups[0].resolution.compile-time-value()(
             self.infix.IMPL-OPERATOR,
-            $lookups.AT-POS(1).resolution.compile-time-value,
+            $lookups[1].resolution.compile-time-value,
         )
     }
 
@@ -1676,10 +1688,10 @@ class RakuAST::MetaInfix::Zip
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_ZIP')),
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier($!infix.reducer-name)),
-        ])
+        ]
     }
 
     method IMPL-OPERATOR() {
@@ -1702,10 +1714,10 @@ class RakuAST::MetaInfix::Zip
     }
 
     method IMPL-HOP-INFIX() {
-        my $lookups := self.get-implicit-lookups;
-        $lookups.AT-POS(0).resolution.compile-time-value()(
+        my $lookups := self.IMPL-UNWRAP-LIST(self.get-implicit-lookups);
+        $lookups[0].resolution.compile-time-value()(
             self.infix.IMPL-OPERATOR,
-            $lookups.AT-POS(1).resolution.compile-time-value,
+            $lookups[1].resolution.compile-time-value,
         )
     }
 
@@ -1770,9 +1782,9 @@ class RakuAST::MetaInfix::Hyper
     method reducer-name() { $!infix.reducer-name }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_HYPER')),
-        ])
+        ]
     }
 
     method IMPL-OPERATOR() {
@@ -1809,7 +1821,7 @@ class RakuAST::MetaInfix::Hyper
     }
 
     method IMPL-HOP-INFIX() {
-        self.get-implicit-lookups().AT-POS(0).resolution.compile-time-value()(
+        self.IMPL-UNWRAP-LIST(self.get-implicit-lookups())[0].resolution.compile-time-value()(
             self.infix.resolution.compile-time-value,
             :dwim-left($!dwim-left),
             :dwim-right($!dwim-right)
@@ -1993,7 +2005,7 @@ class RakuAST::ApplyInfix
         while nqp::isconcrete($!args.arg-at-pos($i)) {
             @colonpairs.push($!args.arg-at-pos($i++));
         }
-        self.IMPL-WRAP-LIST(@colonpairs)
+        @colonpairs
     }
 
     method operands() { $!args.IMPL-UNWRAP-LIST($!args.args) }
@@ -2517,13 +2529,13 @@ class RakuAST::MetaPrefix::Hyper
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_HYPER_PREFIX')),
-        ])
+        ]
     }
 
     method IMPL-HOP-INFIX() {
-        self.get-implicit-lookups().AT-POS(0).resolution.compile-time-value()(
+        self.IMPL-UNWRAP-LIST(self.get-implicit-lookups())[0].resolution.compile-time-value()(
             self.prefix.IMPL-HOP-PREFIX
         )
     }
@@ -3218,13 +3230,17 @@ class RakuAST::MetaPostfix::Hyper
     }
 
     method PRODUCE-IMPLICIT-LOOKUPS() {
-        self.IMPL-WRAP-LIST([
+        [
             RakuAST::Type::Setting.new(RakuAST::Name.from-identifier('&METAOP_HYPER_POSTFIX')),
-        ])
+        ]
     }
 
+    method IMPL-CURRIES { $!postfix.IMPL-CURRIES }
+
+    method IMPL-CUSTOM-SHOULD-CURRY-CONDITIONS { $!postfix.IMPL-CUSTOM-SHOULD-CURRY-CONDITIONS }
+
     method IMPL-HOP-INFIX() {
-        self.get-implicit-lookups().AT-POS(0).resolution.compile-time-value()(
+        self.IMPL-UNWRAP-LIST(self.get-implicit-lookups())[0].resolution.compile-time-value()(
             self.postfix.IMPL-HOP-POSTFIX
         )
     }
