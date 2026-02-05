@@ -1165,7 +1165,7 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
         my $*LEFTSIGIL;              # sigil of LHS for item vs list assignment
         my $*IN-META := '';          # parsing a metaoperator like [..]
         my $*IN_REDUCE := 0;         # attempting to parse an [op] construct
-        my $*IN_TABLE := 0;          # > 0 if inside a =table
+        my $*IN-TABLE := 0;          # > 0 if inside a =table
         my %*QUOTE-LANGS;            # quote language cache
         my $*LASTQUOTE := [0,0];     # for runaway quote detection
         my $*SORRY_REMAINING := 10;  # decremented on each sorry; panic when 0
@@ -2738,7 +2738,7 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
     token infix:sym<.=> { <.sym> }
 
     # Assignment infixes
-    token infix:sym<:=>  { <sym> }
+    token infix:sym<:=>  { ':=' | '≔' }
     token infix:sym<::=> { <sym> <.NYI: '"::="'> }
 
     # Iffy multiplicative infixes
@@ -4288,7 +4288,7 @@ grammar Raku::Grammar is HLL::Grammar does Raku::Common {
 
     token type-declarator:sym<constant> {
         :my $*IN-DECL := 'constant';
-        <.sym>
+        <.scope-constant>
         <.kok>
         [
           | '\\'?
@@ -5744,7 +5744,7 @@ Rakudo significantly on *every* run."
     # directives that may not be used as block names
     token rakudoc-directives {
         [
-        alias | begin | column | config | end | finish | for | place | row
+        alias | begin | column | config | counter | end | finish | for | place | row
         ] >>
     }
 
@@ -5779,7 +5779,7 @@ Rakudo significantly on *every* run."
 
         # fetch column and any configuration
         '=column' [ [\n $<margin> '=']? \h+ <colonpair> ]*
-        { $/.panic("=column outside of table") unless $*IN_TABLE }
+        { $/.panic("=column outside of table") unless $*IN-TABLE }
 
         # should now be at end of line
         <.doc-newline>
@@ -5793,7 +5793,7 @@ Rakudo significantly on *every* run."
 
         # fetch row and any configuration
         '=row' [ [\n $<margin> '=']? \h+ <colonpair> ]*
-        { $/.panic("=row outside of table") unless $*IN_TABLE }
+        { $/.panic("=row outside of table") unless $*IN-TABLE }
 
         # should now be at end of line
         <.doc-newline>
@@ -5839,6 +5839,20 @@ Rakudo significantly on *every* run."
         [\h+ $<doc-identifier>=[ <.doc-identifier> | '*' ] ]?
 
         # fetch any configuration
+        [ [\n $<margin> '=']? \h+ <colonpair> ]*
+
+        # should now be at end of line
+        <.doc-newline>
+    }
+
+    # handle =counter
+    token doc-block:sym<counter> {
+
+        ^^ $<margin>=[ \h* ] '=counter'
+
+        [\h+ $<doc-identifier>=[ <.doc-identifier> | '*' ] ]?
+
+        # fetch any counter configuration
         [ [\n $<margin> '=']? \h+ <colonpair> ]*
 
         # should now be at end of line
@@ -5895,12 +5909,12 @@ Rakudo significantly on *every* run."
         $<type>=<.doc-identifier>
 
         {
-            my str $type := ~$<type>;
-            if $type eq 'table' {
-                $*IN_TABLE++;
+            my str $root := ~$<type><root>;
+            if $root eq 'table' || $root eq 'numtable' {
+                $*IN-TABLE++;
             }
-            elsif $type eq 'cell' {
-                $/.panic("=begin cell outside of table") unless $*IN_TABLE;
+            elsif $root eq 'cell' {
+                $/.panic("=begin cell outside of table") unless $*IN-TABLE;
             }
         }
 
@@ -5929,7 +5943,10 @@ Rakudo significantly on *every* run."
               )}
         ]
 
-        { $*IN_TABLE-- if ~$<type> eq 'table' }
+        {
+            my str $root := ~$<type><root>;
+            $*IN-TABLE-- if $root eq 'table' || $root eq 'numtable';
+        }
     }
 
     token doc-block:sym<for> {
@@ -5962,7 +5979,7 @@ Rakudo significantly on *every* run."
         # cells not allowed outside table
         {
             $/.panic("=for cell outside of table")
-              if ~$<type> eq 'cell' && !$*IN_TABLE;
+              if ~$<type><root> eq 'cell' && !$*IN-TABLE;
         }
 
         # fetch any configuration
@@ -5990,7 +6007,7 @@ Rakudo significantly on *every* run."
         # cells not allowed outside table
         {
             $/.panic("=cell outside of table")
-              if ~$<type> eq 'cell' && !$*IN_TABLE;
+              if ~$<type><root> eq 'cell' && !$*IN-TABLE;
         }
 
         # the rest of the line is considered content
@@ -6005,7 +6022,7 @@ Rakudo significantly on *every* run."
     }
 
     token doc-identifier {
-        <.alpha> [ <[-']> | [\d* <.alpha>+] ]* $<level>=\d*
+        $<root>=[<.alpha> [ <[-']> | [\d* <.alpha>+] ]*] $<level>=\d*
     }
 
     token doc-content {

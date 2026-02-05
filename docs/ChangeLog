@@ -1,3 +1,118 @@
+New in 2026.01:
+
++ Improvements:
+    + Remove meaningless command-line argument "parsetrace" [cff551c8]
+    + Add infix + - / * candidates for mixed int / num [1b46f713]
+    + Make -MSIL cleaner by excluding any core BBs [c7e41bd8]
+    + Test .from-posix versus .from-posix-nanos [f95aefad]
+    + Add profiling opts (from NQP) [6f087b06]
+    + Treat .WHERE as a macro, just as .HOW and friends [a0a198dd]
+    + Give "macro" DEFINITE same treatment as WHO and friends [62927745]
+    + Give "macro" REPR same treatment as WHO and friends [971b2fa4]
+
++ Fixes:
+    + Fix roast test failure caused by 1b46f7135b7776e779 [fbb967b3]
+    + Rename Test's exit-ok to exits-ok [24e6ff34]
+    + MoarVM alignment fix for GCC 15.1/OpenSuse Leap 16 [fb0142fe]
+    + Fix an inverted logic scenerio for $type_env [3babcc69]
+
++ Additions:
+
++ RakuAST:
+    + Fixup handling of =numtable [fcc0e185]
+    + Allow for =table3 and friends in podification [f3ada07f]
+    + Prevent execution error if no RakuAST [d1a33cd7]
+    + Rename =restart to =counter [dc33497f]
+    + Make rakudoc2text also take a ::CompUnit [81ea8224]
+
++ Internal:
+    + MSI: Use $(var.VERSION) For Product Version Instead Of Hardcoded "1.0.0"
+      [a9e53a05]
+    + Update Copyrights To 2026 [e0797921][33652f14][6f69b3aa][fce89c25]
+      [52995edb][c7e8ffb6][39d5610b][c4efa5f1][422e44d0][8676d9b4][5e10741c]
+
+New in 2025.12:
++ Improvements:
+    + Improve help message wrt --optimize [04a36dd1]
+    + Support Unicode 17 (up from 15) [4d62268a][1e66a50c] 
+    + varargs logic updates [f4cb406b][159288a3]
+
++ Fixes:
+    + Cleanup for installing scripts on win [cd3b612c][635279c8]
+    + Normalize rakudo-home path in script wrappers [ee706010]
+    + Fixed several issues with loading of precompiled files
+      from different threads [b85fb8c0][002dac33][040d145a]
+    + Fix memory issue in script runner [bed55b51][2d4a8c83]
+    + Make CORE.c setting build reproducibly [5154f2a1]
+    + Fix bug in one(...).defined [5a742811]
+
++ Additions:
+    + Add variable number of arguments (varargs) support to NativeCall
+      [488783a7][61f09188][7a302e08][820a4a94]
+    + Add support for pseudo-terminals (PTY) [1d6aae34][029cb9fd][1dfd3b5e]
+      [f347d084][e246fc23][fd386dbc][81a6e768]
+
++ RakuAST:
+    + fix issue with role composition [3e9f2527]
+    + allow "constant" to be localizable [6b47541e]
+    + fix subset type defaults in containers [bb4e88a2]
+    + allow ≔ (2254 COLON EQUALS)as a unicode alternative for := [41a1b3cd]
+    + introduce =restart RakuDoc directive [6f557f1e]
+
++ Internal:
+    + Some refactoring around leap seconds [3b80351f][6432643b]
+
+New in 2025.11:
+
++ Improvements:
+    + MoarVM now uses rapidhash v3 [74bbe190]
+    + Give any() a @foo candidate for performance [b92e33cc]
+    + Allow native attributes to be twiddled with .clone [78a43bc2]
+    + Improve the Windows first time experience [5ddbdb98][5438dea2][3d21d069][221cf2c8][ac97ef20]
+
++ Fixes:
+    + Fix typo in error message: `udp-bind` -> `bind-udp` [40380963]
+    + Don't allow a Range in an array shape specification (#6013) [f7ce946e]
+
++ RakuAST:
+    + fix =table checks for numbered tables [71170603][0121b338]
+    + allow ::Block.new() to take :$multiness [44bb652d]
+    + Fix some bugs found by TRAE IDE [690b7f07]
+    + don't allow :{ } if it's a block [c1d8805e]
+    + don't allow &( ) contextualizer [dd78e653]
+
++ Internal:
+    + Resolve potential NP references [2785bfe9][a58018a2][e2c55717]
+    + update NQP/MoarVM pre-release [7106759e]
+    + Mark Hyper class as an implementation detail [89dff65d]
+    + Release engineering cleanups [6a9e284f][4a043ba5][e90f70e3][efba5598][393a34ad][b1eca4bc][1e483e1f][1741ccdf][61429b0c][147791df][bf0488e2][c06cf642][74927a8d][a69582ea][632378cb][95c56c2f][ffeb4260][bebd4a0f][e1b3f927][bb515e4a][6fe6c5f0][f6126111][0949e869][40b4e11b][211197cb]
+
+New in 2025.10:
++ RakuAST:
+    + Make UNIT implicits available to dynamic code [4d7234ca]
+    + Doc clarification of fix for #5855 [47746a84]
+    + Fix indirect methods with feed operators [f6180a31]
+    + Remove special handling of '$]' [21dd9921]
+    + fix gisting of &?ROUTINE [c9714bf9]
+    + don't show signature on regex/rule/token [483307f7]
+    + fix deparsing of nameless package-like constructs [0b5bb196]
+    + fix deparsing of rule/token/with leading doc [726c0e8b]
+
++ Improvements:
+    + Make the REPL show lists of Matches better [d6dda7eb]
+    + RakuAST - Make UNIT implicits available to dynamic code [4d7234ca]
+    + RakuAST: Doc clarification of fix for #5855 (R#5855) [47746a84]
+
++ Additions:
+    + Add exit-ok to Test module [7192f67a]
+
++ Fixes:
+    + Fix Hash return type error message to match Array behavior [a988e79f]
+    + Bump NQP to get uint JIT fix [4307ec01]
+    + 6.e - Fix overly permissive lookup into CALLER [5147b67f]
+    + Make sure .are doesn't infiniloop on lazy lists [49354d04]
+    + Restore mention of value in typecheck error [1ac895f1]
+
 New in 2025.08:
 
 + Improvements:

@@ -1,7 +1,7 @@
 use MONKEY-GUTS;          # Allow NQP ops.
 
 unit module Test;
-# Copyright (C) 2007 - 2025 Yet Another Society
+# Copyright (C) 2007 - 2026 Yet Another Society
 
 # settable from outside
 my int $raku_test_times =
@@ -544,7 +544,10 @@ multi sub dies-ok(Callable $code, $reason = '') is export {
     $ok or ($die_on_fail and die-on-fail) or $ok;
 }
 
-multi sub exit-ok(
+multi sub exit-ok(|c) is export is DEPRECATED("exits-ok") {
+    exits-ok(|c)
+}
+multi sub exits-ok(
         &code,
   Int:D $exit = 0,
   Str:D $desc = "Checking for exit($exit)"

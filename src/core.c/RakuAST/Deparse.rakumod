@@ -1238,15 +1238,17 @@ CODE
         my str $declarator = $ast.declarator;
         @parts.push(self.syn-package($declarator));
 
-        my str $name = self.deparse($ast.name);
-        if $ast.parameterization -> $signature {
-            @parts.push((my $deparsed := self.deparse($signature))
-              ?? $name ~ '[' ~ $deparsed ~ ']'
-              !! $name
-            );
-        }
-        else {
-            @parts.push($name);
+        if $ast.name -> $astname {
+            my str $name = self.deparse($astname);
+            if $ast.parameterization -> $signature {
+                @parts.push((my $deparsed := self.deparse($signature))
+                  ?? $name ~ '[' ~ $deparsed ~ ']'
+                  !! $name
+                );
+            }
+            else {
+                @parts.push($name);
+            }
         }
 
         if $ast.traits -> @traits {
@@ -2041,6 +2043,8 @@ CODE
 
         if $ast.WHY -> $WHY {
             @parts.push('{');
+            # https://github.com/rakudo/rakudo/issues/5978
+            my $*DELIMITER = ' ';  # a ";" here would spoil things
             @parts = self.add-any-docs(@parts.join(' '), $WHY);
             @parts.push($*INDENT);
         }
