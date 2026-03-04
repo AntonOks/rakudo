@@ -266,6 +266,9 @@ my class X::Method::NotFound is Exception {
         elsif $.method eq 'last' {
             %suggestions<tail> = 0;
         }
+        elsif $.method eq 'Uni' && $.typename eq 'Str' {
+            %suggestions{$_} = 0 for <NFC NFD NFKC NFKD>;
+        }
 
         my sub code-name(Mu $meth) {
             # KnowHOW `methods` method returns a hash. Respectively, iteration over .^methods gives us Pairs.
@@ -911,7 +914,7 @@ my role X::Comp is Exception {
         with $filename {
             $fn = $_ eq $fn ?? "" !! $_;
         }
-        !$fn || ($fn eq '<unknown file>')
+        quietly !$fn || ($fn eq '<unknown file>')
             ?? !$filename.defined && @lines == 1 && @lines.head == 1
                 ?? ""
                 !! "at line" ~ (@lines == 1 ?? ' ' !! 's ') ~ @lines.join(", ")
@@ -920,7 +923,7 @@ my role X::Comp is Exception {
     method sorry_heading() {
         my ($red, $clear) = Rakudo::Internals.error-rcgye;
         "$red==={$clear}SORRY!$red===$clear Error while compiling{
-          $.filename eq '<unknown file>'
+          !$.filename || $.filename eq '<unknown file>'
             ?? ':'
             !! " $.filename"
         }\n"
